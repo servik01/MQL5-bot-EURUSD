@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //|                                            SMC_PinSweep_EA.mq5    |
 //|  Тренд по структуре D1 + H1 (строгое совпадение)                  |
-//|  Вход: H1 пинбар, снявший ликвидность предыдущего свинга          |
+//|  Вход: лимитка на откате в хвост H1 пинбара, снявшего ликвидность |
 //|  Стоп за хвост пинбара, тейк по фиксированному R:R                |
 //+------------------------------------------------------------------+
 #property copyright "SMC PinSweep"
-#property version   "1.00"
+#property version   "1.10"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -23,6 +23,11 @@ input group "=== Пинбар ==="
 input double   InpMinTailRatio    = 0.40;     // Мин. доля хвоста от диапазона свечи
 input bool     InpRequireSweep    = true;     // Требовать снятие ликвидности
 
+//--- Вход
+input group "=== Вход (лимитный откат) ==="
+input double   InpEntryRetrace    = 0.40;     // Откат в хвост от низа/верха тела, доля хвоста
+input int      InpPendingLifeBars = 1;        // Жизнь неисполненной лимитки, баров H1
+
 //--- Риск и сделка
 input group "=== Риск ==="
 input double   InpRiskRewardRatio = 2.0;      // R:R (тейк = R:R * стоп)
@@ -30,7 +35,7 @@ input double   InpRiskPercent     = 0.5;      // Риск на сделку, % �
 input double   InpFixedLot        = 0.01;     // Фиксированный лот (если риск % = 0)
 input int      InpSLBufferPoints  = 20;       // Буфер стопа за хвост, пунктов
 input int      InpMaxSpreadPoints = 30;       // Макс. спред для входа, пунктов
-input int      InpMaxPositions    = 1;        // Макс. одновременных позиций по символу
+input int      InpMaxPositions    = 1;        // Макс. позиций + лимиток по символу
 
 //--- Служебное
 input group "=== Служебное ==="
@@ -48,6 +53,12 @@ int              g_lotDigits = 2;
 //+------------------------------------------------------------------+
 int OnInit()
   {
+   if(InpEntryRetrace < 0.0 || InpEntryRetrace >= 1.0)
+     {
+      Print("InpEntryRetrace должен быть в диапазоне [0.0 .. 1.0)");
+      return(INIT_PARAMETERS_INCORRECT);
+     }
+
    g_trade.SetExpertMagicNumber(InpMagic);
    g_trade.SetDeviationInPoints(20);
    g_trade.SetTypeFillingBySymbol(_Symbol);
@@ -57,7 +68,6 @@ int OnInit()
    if(!g_structH1.Init(_Symbol, PERIOD_H1, InpSwingBarsH1, InpBreakByClose))
       return(INIT_FAILED);
 
-   //--- разрядность лота
    double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
    if(step <= 0.0)
       step = 0.01;
@@ -69,8 +79,8 @@ int OnInit()
       g_lotDigits++;
      }
 
-   PrintFormat("SMC_PinSweep инициализирован: %s, риск %.2f%%, R:R 1:%.1f",
-               _Symbol, InpRiskPercent, InpRiskRewardRatio);
+   PrintFormat("SMC_PinSweep %s: риск %.2f%%, R:R 1:%.1f, откат %.2f, лимитка %d бар(ов)",
+               _Symbol, InpRiskPercent, InpRiskRewardRatio, InpEntryRetrace, InpPendingLifeBars);
    return(INIT_SUCCEEDED);
   }
 
@@ -84,13 +94,14 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
   {
-   //--- работаем только на открытии нового H1 бара
    datetime cur = iTime(_Symbol, PERIOD_H1, 0);
    if(cur == 0 || cur == g_lastBarH1)
       return;
    g_lastBarH1 = cur;
 
-   //--- обновляем структуру на обоих таймфреймах
+   //--- снимаем протухшие лимитки до анализа нового сигнала
+   ExpirePendingOrders(cur);
+
    g_structD1.Update();
    g_structH1.Update();
 
@@ -99,35 +110,26 @@ void OnTick()
                   TimeToString(cur), g_structD1.TrendToString(), g_structH1.TrendToString(),
                   _Digits, g_structH1.SwingLow(), _Digits, g_structH1.SwingHigh());
 
-   if(CountOwnPositions() >= InpMaxPositions)
+   if(CountOwnPositions() + CountOwnPendings() >= InpMaxPositions)
       return;
 
-   //--- строгое совпадение трендов
    ENUM_SMC_TREND td = g_structD1.Trend();
    ENUM_SMC_TREND th = g_structH1.Trend();
    if(td == SMC_TREND_NONE || td != th)
       return;
 
-   //--- фильтр спреда
    long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    if(spread > InpMaxSpreadPoints)
-     {
-      if(InpVerboseLog)
-         PrintFormat("Пропуск: спред %d > %d", (int)spread, InpMaxSpreadPoints);
       return;
-     }
 
-   //--- пинбар на последнем закрытом H1 баре
    SPinBar pb = DetectPinBar(_Symbol, PERIOD_H1, 1, InpMinTailRatio);
    if(!pb.valid)
       return;
 
-   //--- направление пинбара должно совпадать с трендом
    if((td == SMC_TREND_BULL && pb.direction != 1) ||
       (td == SMC_TREND_BEAR && pb.direction != -1))
       return;
 
-   //--- снятие ликвидности
    if(InpRequireSweep)
      {
       if(td == SMC_TREND_BULL)
@@ -142,27 +144,29 @@ void OnTick()
         }
      }
 
-   OpenTrade(td, pb);
+   PlaceLimitOrder(td, pb, cur);
   }
 
 //+------------------------------------------------------------------+
-//| Открытие позиции по сигналу                                       |
+//| Выставление лимитного ордера на откате в хвост пинбара            |
 //+------------------------------------------------------------------+
-void OpenTrade(const ENUM_SMC_TREND trend, const SPinBar &pb)
+void PlaceLimitOrder(const ENUM_SMC_TREND trend, const SPinBar &pb, const datetime barTime)
   {
    double point  = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    double buffer = InpSLBufferPoints * point;
 
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   if(ask <= 0.0 || bid <= 0.0)
-      return;
+   double bodyTop    = MathMax(pb.open, pb.close);
+   double bodyBottom = MathMin(pb.open, pb.close);
 
    double entry, sl, tp;
 
    if(trend == SMC_TREND_BULL)
      {
-      entry = ask;
+      double lowerTail = bodyBottom - pb.low;
+      if(lowerTail <= 0.0)
+         return;
+      //--- откат отмеряется от низа тела вниз, вглубь хвоста
+      entry = bodyBottom - InpEntryRetrace * lowerTail;
       sl    = pb.low - buffer;
       if(entry - sl <= 0.0)
          return;
@@ -170,23 +174,45 @@ void OpenTrade(const ENUM_SMC_TREND trend, const SPinBar &pb)
      }
    else
      {
-      entry = bid;
+      double upperTail = pb.high - bodyTop;
+      if(upperTail <= 0.0)
+         return;
+      entry = bodyTop + InpEntryRetrace * upperTail;
       sl    = pb.high + buffer;
       if(sl - entry <= 0.0)
          return;
       tp = entry - (sl - entry) * InpRiskRewardRatio;
      }
 
-   sl = NormalizeDouble(sl, _Digits);
-   tp = NormalizeDouble(tp, _Digits);
+   entry = NormalizeDouble(entry, _Digits);
+   sl    = NormalizeDouble(sl,    _Digits);
+   tp    = NormalizeDouble(tp,    _Digits);
 
-   //--- проверка минимальной дистанции стопов брокера
-   long stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-   double minDist  = stopsLevel * point;
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   if(ask <= 0.0 || bid <= 0.0)
+      return;
+
+   long   stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minDist    = stopsLevel * point;
+
+   //--- лимитка должна лежать по нужную сторону от рынка
+   if(trend == SMC_TREND_BULL && ask <= entry + minDist)
+     {
+      if(InpVerboseLog)
+         Print("Пропуск: цена уже ниже уровня buy limit");
+      return;
+     }
+   if(trend == SMC_TREND_BEAR && bid >= entry - minDist)
+     {
+      if(InpVerboseLog)
+         Print("Пропуск: цена уже выше уровня sell limit");
+      return;
+     }
+
    if(MathAbs(entry - sl) < minDist || MathAbs(tp - entry) < minDist)
      {
-      PrintFormat("Пропуск: стоп/тейк ближе минимальной дистанции брокера (%d пунктов)",
-                  (int)stopsLevel);
+      PrintFormat("Пропуск: стоп/тейк ближе минимальной дистанции (%d пунктов)", (int)stopsLevel);
       return;
      }
 
@@ -197,31 +223,65 @@ void OpenTrade(const ENUM_SMC_TREND trend, const SPinBar &pb)
       return;
      }
 
-   bool ok = false;
-   string comment = (trend == SMC_TREND_BULL) ? "SMC pin sweep buy" : "SMC pin sweep sell";
+   //--- срок жизни: конец N-го бара H1 от текущего
+   datetime expiry = barTime + (datetime)(PeriodSeconds(PERIOD_H1) * MathMax(1, InpPendingLifeBars));
 
+   bool ok = false;
    if(trend == SMC_TREND_BULL)
-      ok = g_trade.Buy(lot, _Symbol, 0.0, sl, tp, comment);
+      ok = g_trade.BuyLimit(lot, entry, _Symbol, sl, tp, ORDER_TIME_GTC, 0, "SMC pin limit buy");
    else
-      ok = g_trade.Sell(lot, _Symbol, 0.0, sl, tp, comment);
+      ok = g_trade.SellLimit(lot, entry, _Symbol, sl, tp, ORDER_TIME_GTC, 0, "SMC pin limit sell");
 
    if(!ok)
      {
-      PrintFormat("Ошибка открытия: retcode=%d %s",
+      PrintFormat("Ошибка выставления лимитки: retcode=%d %s",
                   g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
       return;
      }
 
-   PrintFormat("ВХОД %s lot=%.*f entry=%.*f sl=%.*f tp=%.*f tail=%.2f",
-               (trend == SMC_TREND_BULL ? "BUY" : "SELL"),
-               g_lotDigits, lot, _Digits, entry, _Digits, sl, _Digits, tp, pb.tailRatio);
+   PrintFormat("ЛИМИТКА %s lot=%.*f entry=%.*f sl=%.*f tp=%.*f risk=%.*f tail=%.2f exp=%s",
+               (trend == SMC_TREND_BULL ? "BUY LIMIT" : "SELL LIMIT"),
+               g_lotDigits, lot, _Digits, entry, _Digits, sl, _Digits, tp,
+               _Digits, MathAbs(entry - sl), pb.tailRatio, TimeToString(expiry));
 
    if(InpDrawSignals)
-      DrawSignal(trend, pb);
+      DrawSignal(trend, pb, entry);
   }
 
 //+------------------------------------------------------------------+
-//| Расчёт лота от риска                                              |
+//| Удаление лимиток, проживших дольше InpPendingLifeBars баров       |
+//+------------------------------------------------------------------+
+void ExpirePendingOrders(const datetime currentBar)
+  {
+   int    life    = MathMax(1, InpPendingLifeBars);
+   int    secs    = PeriodSeconds(PERIOD_H1);
+   if(secs <= 0)
+      return;
+
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0)
+         continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol)
+         continue;
+      if(OrderGetInteger(ORDER_MAGIC) != InpMagic)
+         continue;
+
+      datetime setup = (datetime)OrderGetInteger(ORDER_TIME_SETUP);
+      int barsAlive  = (int)((currentBar - setup) / secs);
+
+      if(barsAlive >= life)
+        {
+         if(g_trade.OrderDelete(ticket))
+            PrintFormat("Лимитка #%I64u снята: не исполнилась за %d бар(ов)", ticket, life);
+         else
+            PrintFormat("Не удалось снять лимитку #%I64u: retcode=%d",
+                        ticket, g_trade.ResultRetcode());
+        }
+     }
+  }
+
 //+------------------------------------------------------------------+
 double CalcLot(const double slDistance)
   {
@@ -244,8 +304,6 @@ double CalcLot(const double slDistance)
   }
 
 //+------------------------------------------------------------------+
-//| Приведение лота к требованиям символа                             |
-//+------------------------------------------------------------------+
 double NormalizeLotValue(const double rawLot)
   {
    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
@@ -256,15 +314,13 @@ double NormalizeLotValue(const double rawLot)
 
    double lot = MathFloor(rawLot / step) * step;
    if(lot < minLot)
-      lot = 0.0;                 // не хватает средств под минимальный риск
+      lot = 0.0;
    if(lot > maxLot)
       lot = maxLot;
 
    return(NormalizeDouble(lot, g_lotDigits));
   }
 
-//+------------------------------------------------------------------+
-//| Количество своих открытых позиций по символу                      |
 //+------------------------------------------------------------------+
 int CountOwnPositions(void)
   {
@@ -284,21 +340,47 @@ int CountOwnPositions(void)
   }
 
 //+------------------------------------------------------------------+
-//| Отрисовка сигнала на графике                                      |
-//+------------------------------------------------------------------+
-void DrawSignal(const ENUM_SMC_TREND trend, const SPinBar &pb)
+int CountOwnPendings(void)
   {
-   string name = StringFormat("SMC_sig_%d", (int)pb.time);
-   double anchor = (trend == SMC_TREND_BULL) ? pb.low : pb.high;
+   int count = 0;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0)
+         continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol)
+         continue;
+      if(OrderGetInteger(ORDER_MAGIC) != InpMagic)
+         continue;
+      count++;
+     }
+   return(count);
+  }
 
-   if(!ObjectCreate(0, name, OBJ_ARROW, 0, pb.time, anchor))
-      return;
+//+------------------------------------------------------------------+
+void DrawSignal(const ENUM_SMC_TREND trend, const SPinBar &pb, const double entry)
+  {
+   string arrowName = StringFormat("SMC_sig_%d", (int)pb.time);
+   double anchor    = (trend == SMC_TREND_BULL) ? pb.low : pb.high;
 
-   ObjectSetInteger(0, name, OBJPROP_ARROWCODE, (trend == SMC_TREND_BULL) ? 233 : 234);
-   ObjectSetInteger(0, name, OBJPROP_COLOR,
-                    (trend == SMC_TREND_BULL) ? clrDeepSkyBlue : clrOrangeRed);
-   ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
-   ObjectSetInteger(0, name, OBJPROP_ANCHOR,
-                    (trend == SMC_TREND_BULL) ? ANCHOR_TOP : ANCHOR_BOTTOM);
+   if(ObjectCreate(0, arrowName, OBJ_ARROW, 0, pb.time, anchor))
+     {
+      ObjectSetInteger(0, arrowName, OBJPROP_ARROWCODE, (trend == SMC_TREND_BULL) ? 233 : 234);
+      ObjectSetInteger(0, arrowName, OBJPROP_COLOR,
+                       (trend == SMC_TREND_BULL) ? clrDeepSkyBlue : clrOrangeRed);
+      ObjectSetInteger(0, arrowName, OBJPROP_WIDTH, 2);
+      ObjectSetInteger(0, arrowName, OBJPROP_ANCHOR,
+                       (trend == SMC_TREND_BULL) ? ANCHOR_TOP : ANCHOR_BOTTOM);
+     }
+
+   //--- уровень лимитного входа
+   string lineName = StringFormat("SMC_entry_%d", (int)pb.time);
+   datetime tEnd   = pb.time + PeriodSeconds(PERIOD_H1) * (MathMax(1, InpPendingLifeBars) + 1);
+   if(ObjectCreate(0, lineName, OBJ_TREND, 0, pb.time, entry, tEnd, entry))
+     {
+      ObjectSetInteger(0, lineName, OBJPROP_COLOR, clrGoldenrod);
+      ObjectSetInteger(0, lineName, OBJPROP_STYLE, STYLE_DOT);
+      ObjectSetInteger(0, lineName, OBJPROP_RAY_RIGHT, false);
+     }
   }
 //+------------------------------------------------------------------+
