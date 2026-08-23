@@ -100,7 +100,7 @@ void OnTick()
    g_lastBarH1 = cur;
 
    //--- снимаем протухшие лимитки до анализа нового сигнала
-   ExpirePendingOrders(cur);
+   ExpirePendingOrders();
 
    g_structD1.Update();
    g_structH1.Update();
@@ -144,13 +144,13 @@ void OnTick()
         }
      }
 
-   PlaceLimitOrder(td, pb, cur);
+   PlaceLimitOrder(td, pb);
   }
 
 //+------------------------------------------------------------------+
 //| Выставление лимитного ордера на откате в хвост пинбара            |
 //+------------------------------------------------------------------+
-void PlaceLimitOrder(const ENUM_SMC_TREND trend, const SPinBar &pb, const datetime barTime)
+void PlaceLimitOrder(const ENUM_SMC_TREND trend, const SPinBar &pb)
   {
    double point  = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    double buffer = InpSLBufferPoints * point;
@@ -223,9 +223,7 @@ void PlaceLimitOrder(const ENUM_SMC_TREND trend, const SPinBar &pb, const dateti
       return;
      }
 
-   //--- срок жизни: конец N-го бара H1 от текущего
-   datetime expiry = barTime + (datetime)(PeriodSeconds(PERIOD_H1) * MathMax(1, InpPendingLifeBars));
-
+   //--- ордер ставится GTC, снятие по возрасту делает ExpirePendingOrders()
    bool ok = false;
    if(trend == SMC_TREND_BULL)
       ok = g_trade.BuyLimit(lot, entry, _Symbol, sl, tp, ORDER_TIME_GTC, 0, "SMC pin limit buy");
@@ -239,10 +237,10 @@ void PlaceLimitOrder(const ENUM_SMC_TREND trend, const SPinBar &pb, const dateti
       return;
      }
 
-   PrintFormat("ЛИМИТКА %s lot=%.*f entry=%.*f sl=%.*f tp=%.*f risk=%.*f tail=%.2f exp=%s",
+   PrintFormat("ЛИМИТКА %s lot=%.*f entry=%.*f sl=%.*f tp=%.*f risk=%.*f tail=%.2f жизнь=%d бар(ов)",
                (trend == SMC_TREND_BULL ? "BUY LIMIT" : "SELL LIMIT"),
                g_lotDigits, lot, _Digits, entry, _Digits, sl, _Digits, tp,
-               _Digits, MathAbs(entry - sl), pb.tailRatio, TimeToString(expiry));
+               _Digits, MathAbs(entry - sl), pb.tailRatio, MathMax(1, InpPendingLifeBars));
 
    if(InpDrawSignals)
       DrawSignal(trend, pb, entry);
@@ -251,12 +249,9 @@ void PlaceLimitOrder(const ENUM_SMC_TREND trend, const SPinBar &pb, const dateti
 //+------------------------------------------------------------------+
 //| Удаление лимиток, проживших дольше InpPendingLifeBars баров       |
 //+------------------------------------------------------------------+
-void ExpirePendingOrders(const datetime currentBar)
+void ExpirePendingOrders(void)
   {
-   int    life    = MathMax(1, InpPendingLifeBars);
-   int    secs    = PeriodSeconds(PERIOD_H1);
-   if(secs <= 0)
-      return;
+   int life = MathMax(1, InpPendingLifeBars);
 
    for(int i = OrdersTotal() - 1; i >= 0; i--)
      {
@@ -268,8 +263,14 @@ void ExpirePendingOrders(const datetime currentBar)
       if(OrderGetInteger(ORDER_MAGIC) != InpMagic)
          continue;
 
-      datetime setup = (datetime)OrderGetInteger(ORDER_TIME_SETUP);
-      int barsAlive  = (int)((currentBar - setup) / secs);
+      //--- возраст считаем в барах: iBarShift даёт индекс бара, на котором
+      //--- ордер был выставлен. Разница времён в секундах здесь неверна,
+      //--- т.к. ордер ставится на первом тике бара, а не ровно в его открытие.
+      datetime setup     = (datetime)OrderGetInteger(ORDER_TIME_SETUP);
+      int      setupBar  = iBarShift(_Symbol, PERIOD_H1, setup);
+      if(setupBar < 0)
+         continue;
+      int      barsAlive = setupBar;
 
       if(barsAlive >= life)
         {
