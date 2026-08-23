@@ -1,0 +1,29 @@
+# Скомпилированные файлы MetaEditor
+*.ex4
+*.ex5
+
+# Логи и отчёты тестера
+*.log
+*.htm
+*.html
+*.gif
+Files/
+Logs/
+Tester/
+MQL5/Files/
+MQL5/Logs/
+
+# Локальные настройки терминала
+*.set
+*.ini
+*.chr
+*.tpl
+
+# ОС
+.DS_Store
+Thumbs.db
+
+# Редакторы
+.vscode/
+.idea/
+.zed/
