@@ -388,7 +388,11 @@ void CSwingStructure::MarkHighSwept(const int index)
   }
 
 //+------------------------------------------------------------------+
-//| Границы диапазона: последний свинг-хай и свинг-лоу в истории      |
+//| Границы диапазона: последняя импульсная нога в сторону тренда.    |
+//| Якорь — самый свежий экстремум по тренду (high для BULL, low для  |
+//| BEAR), вторая граница — ближайший противоположный экстремум перед |
+//| ним по времени, то есть точка начала этой же ноги. Так high и low |
+//| гарантированно относятся к одному движению, а не к разным.        |
 //+------------------------------------------------------------------+
 bool CSwingStructure::RangeBounds(double &low, double &high)
   {
@@ -397,8 +401,30 @@ bool CSwingStructure::RangeBounds(double &low, double &high)
    if(nh == 0 || nl == 0)
       return(false);
 
-   high = m_highs[nh - 1].price;
-   low  = m_lows[nl - 1].price;
+   if(m_trend == SMC_TREND_BEAR)
+     {
+      low = m_lows[nl - 1].price;
+      datetime t = m_lows[nl - 1].time;
+
+      int i = nh - 1;
+      while(i >= 0 && m_highs[i].time >= t)
+         i--;
+      if(i < 0)
+         return(false);
+      high = m_highs[i].price;
+     }
+   else
+     {
+      high = m_highs[nh - 1].price;
+      datetime t = m_highs[nh - 1].time;
+
+      int i = nl - 1;
+      while(i >= 0 && m_lows[i].time >= t)
+         i--;
+      if(i < 0)
+         return(false);
+      low = m_lows[i].price;
+     }
 
    return(high > low);
   }

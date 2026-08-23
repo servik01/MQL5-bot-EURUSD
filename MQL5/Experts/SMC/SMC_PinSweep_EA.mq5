@@ -169,17 +169,26 @@ void OnTick()
 
    //--- фильтр размера свечи по ATR
    double minRange = 0.0;
+   double atrValue = 0.0;
    if(InpMinRangeATR > 0.0)
      {
       double atr[];
       if(CopyBuffer(g_atrHandle, 0, 1, 1, atr) != 1)
          return;
-      minRange = atr[0] * InpMinRangeATR;
+      atrValue = atr[0];
+      minRange = atrValue * InpMinRangeATR;
      }
 
    SPinBar pb = DetectPinBar(_Symbol, PERIOD_H1, 1, InpMinTailRatio, minRange);
    if(!pb.valid)
+     {
+      //--- причина и числа в лог - материал для калибровки InpMinRangeATR/InpMinTailRatio
+      if(pb.reject == SMC_PINBAR_RANGE_TOO_SMALL || pb.reject == SMC_PINBAR_TAIL_TOO_SMALL)
+         g_log.Rejected(dirName, StringFormat("pinbar_%s range=%.5f atr=%.5f minRange=%.5f tail=%.2f",
+                                              PinBarRejectToString(pb.reject), pb.range, atrValue,
+                                              minRange, pb.tailRatio));
       return;
+     }
 
    if((td == SMC_TREND_BULL && pb.direction != 1) ||
       (td == SMC_TREND_BEAR && pb.direction != -1))
