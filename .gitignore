@@ -27,3 +27,9 @@ Thumbs.db
 .vscode/
 .idea/
 .zed/
+
+# Локальные пути к MT5
+scripts/mt5.env
+
+# Отчёты тестера
+reports/

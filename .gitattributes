@@ -1,0 +1,11 @@
+# MetaEditor любит CRLF, git хранит LF
+*.mq5  text eol=lf
+*.mqh  text eol=lf
+*.mq4  text eol=lf
+*.md   text eol=lf
+*.sh   text eol=lf
+*.json text eol=lf
+
+# Бинарники и артефакты
+*.ex5  binary
+*.ex4  binary
