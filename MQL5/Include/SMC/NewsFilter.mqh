@@ -1,102 +1,75 @@
 //+------------------------------------------------------------------+
 //|                                                  NewsFilter.mqh   |
-//|  Блокировка торговли вокруг новостей высокой важности             |
+//|  Блокировка торговли вокруг фиксированного дневного окна новости  |
 //+------------------------------------------------------------------+
 #ifndef SMC_NEWSFILTER_MQH
 #define SMC_NEWSFILTER_MQH
 
+//--- Экономический календарь в тестере стратегий не всегда отдаёт данные
+//--- (см. OPEN_QUESTIONS.md), поэтому вместо CalendarValueHistory() -
+//--- фиксированное дневное окно по серверному времени (TimeCurrent()).
+//--- TimeGMT() для этого не годится: в тестере стратегий она равна
+//--- TimeTradeServer() (серверному времени), а не настоящему UTC - поведение
+//--- разъехалось бы между тестером и live. Час/минута задаются как серверное
+//--- время; если сервер брокера идёт по UTC+2, это и есть искомое UTC+2.
 class CNewsFilter
   {
 private:
-   string            m_curr1;
-   string            m_curr2;
+   int               m_targetMinutesServer; // время новости, минут от полуночи по серверу
    int               m_minsBefore;
    int               m_minsAfter;
-   bool              m_available;      // календарь вообще отдаёт данные?
-
-   bool              CurrencyMatches(const string eventCurrency);
 
 public:
                      CNewsFilter(void);
-   void              Init(const string symbol, const int minsBefore, const int minsAfter);
-   bool              IsBlocked(const datetime now, string &reason);
-   bool              Available(void) const { return m_available; }
+   void              Init(const int hourServer, const int minuteServer,
+                          const int minsBefore, const int minsAfter);
+   bool              IsBlocked(string &reason);
   };
 
 //+------------------------------------------------------------------+
-CNewsFilter::CNewsFilter(void) : m_curr1(""), m_curr2(""),
-                                 m_minsBefore(30), m_minsAfter(30),
-                                 m_available(false)
+CNewsFilter::CNewsFilter(void) : m_targetMinutesServer(0),
+                                 m_minsBefore(30),
+                                 m_minsAfter(30)
   {
   }
 
 //+------------------------------------------------------------------+
-void CNewsFilter::Init(const string symbol, const int minsBefore, const int minsAfter)
+void CNewsFilter::Init(const int hourServer, const int minuteServer,
+                       const int minsBefore, const int minsAfter)
   {
-   m_curr1      = SymbolInfoString(symbol, SYMBOL_CURRENCY_BASE);
-   m_curr2      = SymbolInfoString(symbol, SYMBOL_CURRENCY_PROFIT);
-   m_minsBefore = minsBefore;
-   m_minsAfter  = minsAfter;
+   m_targetMinutesServer = hourServer * 60 + minuteServer;
+   m_minsBefore          = minsBefore;
+   m_minsAfter           = minsAfter;
 
-   //--- Пробный запрос: в ряде сборок календарь недоступен в тестере.
-   //--- Берём широкое окно, чтобы отличить "нет данных" от "нет событий".
-   MqlCalendarValue probe[];
-   datetime now = TimeCurrent();
-   int n = CalendarValueHistory(probe, now - 30 * 86400, now + 7 * 86400);
-   m_available = (n > 0);
-
-   if(m_available)
-      PrintFormat("Новостной фильтр активен: %s/%s, окно -%d/+%d мин, событий в пробе: %d",
-                  m_curr1, m_curr2, m_minsBefore, m_minsAfter, n);
-   else
-      Print("ВНИМАНИЕ: экономический календарь недоступен — новостной фильтр НЕ работает. "
-            "Результаты теста будут завышены относительно реальной торговли.");
+   PrintFormat("Новостной фильтр: окно %02d:%02d (время сервера) -%d/+%d мин",
+               hourServer, minuteServer, m_minsBefore, m_minsAfter);
   }
 
 //+------------------------------------------------------------------+
-bool CNewsFilter::CurrencyMatches(const string eventCurrency)
-  {
-   return(eventCurrency == m_curr1 || eventCurrency == m_curr2);
-  }
-
+//| Попадает ли текущий момент в запретное окно вокруг времени новости? |
 //+------------------------------------------------------------------+
-//| Попадает ли момент now в запретное окно вокруг важной новости?    |
-//+------------------------------------------------------------------+
-bool CNewsFilter::IsBlocked(const datetime now, string &reason)
+bool CNewsFilter::IsBlocked(string &reason)
   {
    reason = "";
-   if(!m_available)
+
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   int nowMinutes = dt.hour * 60 + dt.min;
+
+   //--- разница now-target, свёрнутая в [-720, 720) на случай окна у полуночи
+   int diff = nowMinutes - m_targetMinutesServer;
+   while(diff >= 720)
+      diff -= 1440;
+   while(diff < -720)
+      diff += 1440;
+
+   if(diff < -m_minsBefore || diff > m_minsAfter)
       return(false);
 
-   datetime from = now - (datetime)(m_minsAfter  * 60);
-   datetime to   = now + (datetime)(m_minsBefore * 60);
-
-   MqlCalendarValue values[];
-   int n = CalendarValueHistory(values, from, to);
-   if(n <= 0)
-      return(false);
-
-   for(int i = 0; i < n; i++)
-     {
-      MqlCalendarEvent ev;
-      if(!CalendarEventById(values[i].event_id, ev))
-         continue;
-      if(ev.importance != CALENDAR_IMPORTANCE_HIGH)
-         continue;
-
-      //--- валюта события живёт в стране события, не в самом событии
-      MqlCalendarCountry country;
-      if(!CalendarCountryById(ev.country_id, country))
-         continue;
-      if(!CurrencyMatches(country.currency))
-         continue;
-
-      reason = StringFormat("%s %s (%s)", country.currency, ev.name,
-                            TimeToString(values[i].time, TIME_MINUTES));
-      return(true);
-     }
-
-   return(false);
+   reason = StringFormat("окно новости %02d:%02d (сейчас %02d:%02d, время сервера)",
+                         m_targetMinutesServer / 60, m_targetMinutesServer % 60,
+                         dt.hour, dt.min);
+   return(true);
   }
 
 #endif
