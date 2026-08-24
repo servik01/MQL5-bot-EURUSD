@@ -43,6 +43,8 @@ input int      InpMaxPositions     = 1;        // Макс. позиций + л�
 
 input group "=== Новости ==="
 input bool     InpUseNewsFilter    = true;     // Фильтр новостей
+input int      InpNewsHourServer   = 14;       // Час новости, время сервера (сейчас UTC+2)
+input int      InpNewsMinuteServer = 30;       // Минута новости, время сервера
 input int      InpNewsMinsBefore   = 30;       // Пауза до новости, минут
 input int      InpNewsMinsAfter    = 30;       // Пауза после новости, минут
 
@@ -98,7 +100,7 @@ int OnInit()
      }
 
    if(InpUseNewsFilter)
-      g_news.Init(_Symbol, InpNewsMinsBefore, InpNewsMinsAfter);
+      g_news.Init(InpNewsHourServer, InpNewsMinuteServer, InpNewsMinsBefore, InpNewsMinsAfter);
 
    g_log.Init(_Symbol, InpMagic, InpWriteCsvLog);
 
@@ -198,7 +200,7 @@ void OnTick()
    if(InpUseNewsFilter)
      {
       string reason;
-      if(g_news.IsBlocked(TimeCurrent(), reason))
+      if(g_news.IsBlocked(reason))
         {
          g_log.Rejected(dirName, "news: " + reason);
          if(InpVerboseLog)
