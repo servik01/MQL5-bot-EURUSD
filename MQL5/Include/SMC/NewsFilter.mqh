@@ -83,10 +83,15 @@ bool CNewsFilter::IsBlocked(const datetime now, string &reason)
          continue;
       if(ev.importance != CALENDAR_IMPORTANCE_HIGH)
          continue;
-      if(!CurrencyMatches(ev.currency))
+
+      //--- валюта события живёт в стране события, не в самом событии
+      MqlCalendarCountry country;
+      if(!CalendarCountryById(ev.country_id, country))
+         continue;
+      if(!CurrencyMatches(country.currency))
          continue;
 
-      reason = StringFormat("%s %s (%s)", ev.currency, ev.name,
+      reason = StringFormat("%s %s (%s)", country.currency, ev.name,
                             TimeToString(values[i].time, TIME_MINUTES));
       return(true);
      }
