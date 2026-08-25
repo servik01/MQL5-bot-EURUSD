@@ -15,9 +15,9 @@ public:
                      CTradeLogger(void);
    bool              Init(const string symbol, const long magic, const bool enabled);
    void              Write(const string event, const string details);
-   void              Signal(const string dir, const double entry, const double sl,
-                            const double tp, const double lot, const double tailRatio,
-                            const double retracePct);
+   void              Signal(const string setup, const string dir, const double entry,
+                            const double sl, const double tp, const double lot,
+                            const double ratio, const double retracePct);
    void              Rejected(const string dir, const string reason);
    string            FileName(void) const { return m_file; }
   };
@@ -71,13 +71,13 @@ void CTradeLogger::Write(const string event, const string details)
   }
 
 //+------------------------------------------------------------------+
-void CTradeLogger::Signal(const string dir, const double entry, const double sl,
-                          const double tp, const double lot, const double tailRatio,
-                          const double retracePct)
+void CTradeLogger::Signal(const string setup, const string dir, const double entry,
+                          const double sl, const double tp, const double lot,
+                          const double ratio, const double retracePct)
   {
    Write("PENDING_PLACED",
-         StringFormat("dir=%s entry=%.5f sl=%.5f tp=%.5f lot=%.2f tail=%.2f retrace=%.1f%%",
-                      dir, entry, sl, tp, lot, tailRatio, retracePct));
+         StringFormat("setup=%s dir=%s entry=%.5f sl=%.5f tp=%.5f lot=%.2f ratio=%.2f retrace=%.1f%%",
+                      setup, dir, entry, sl, tp, lot, ratio, retracePct));
   }
 
 //+------------------------------------------------------------------+

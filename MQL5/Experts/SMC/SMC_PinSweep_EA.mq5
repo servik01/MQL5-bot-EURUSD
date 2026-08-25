@@ -10,6 +10,7 @@
 #include <Trade\Trade.mqh>
 #include <SMC\SwingStructure.mqh>
 #include <SMC\PinBar.mqh>
+#include <SMC\Engulfing.mqh>
 #include <SMC\NewsFilter.mqh>
 #include <SMC\TradeLogger.mqh>
 
@@ -25,6 +26,11 @@ input double   InpMinTailRatio     = 0.40;     // Мин. доля хвоста 
 input double   InpMinRangeATR      = 0.50;     // Мин. диапазон свечи в долях ATR(14) H1
 input int      InpATRPeriod        = 14;       // Период ATR
 
+input group "=== Поглощение ==="
+input bool     InpUseEngulfing       = true;     // Альтернативный вход по поглощению
+input double   InpMinEngulfBodyRatio = 1.0;      // Мин. отношение тела к предыдущему
+input double   InpEngulfEntryRetrace = 0.50;     // Откат в тело поглощающей свечи
+
 input group "=== Премиум / дискаунт ==="
 input bool     InpUsePremiumFilter = true;     // Требовать откат от экстремума
 input double   InpMinRetracement   = 0.40;     // Мин. откат от хая/лоу диапазона
@@ -34,7 +40,7 @@ input double   InpEntryRetrace     = 0.40;     // Откат в хвост от 
 input int      InpPendingLifeBars  = 1;        // Жизнь лимитки, баров H1
 
 input group "=== Риск ==="
-input double   InpRiskRewardRatio  = 2.0;      // R:R
+input double   InpRiskRewardRatio  = 3.0;      // R:R
 input double   InpRiskPercent      = 0.5;      // Риск на сделку, %
 input double   InpFixedLot         = 0.01;     // Фикс. лот (если риск % = 0)
 input int      InpSLBufferPoints   = 20;       // Буфер стопа, пунктов
@@ -80,6 +86,11 @@ int OnInit()
    if(InpMinRetracement < 0.0 || InpMinRetracement >= 1.0)
      {
       Print("InpMinRetracement должен быть в [0.0 .. 1.0)");
+      return(INIT_PARAMETERS_INCORRECT);
+     }
+   if(InpEngulfEntryRetrace < 0.0 || InpEngulfEntryRetrace >= 1.0)
+     {
+      Print("InpEngulfEntryRetrace должен быть в [0.0 .. 1.0)");
       return(INIT_PARAMETERS_INCORRECT);
      }
 
@@ -169,7 +180,7 @@ void OnTick()
    if(SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) > InpMaxSpreadPoints)
       return;
 
-   //--- фильтр размера свечи по ATR
+   //--- фильтр размера свечи по ATR - общий для пинбара и поглощения
    double minRange = 0.0;
    double atrValue = 0.0;
    if(InpMinRangeATR > 0.0)
@@ -181,6 +192,20 @@ void OnTick()
       minRange = atrValue * InpMinRangeATR;
      }
 
+   //--- оба сетапа ищут вход независимо друг от друга (не ИЛИ, а параллельно) -
+   //--- если совпадут на одном баре и есть место по InpMaxPositions, встанут оба
+   TryPinBarEntry(td, dirName, minRange, atrValue);
+
+   if(InpUseEngulfing && CountOwnPositions() + CountOwnPendings() < InpMaxPositions)
+      TryEngulfingEntry(td, dirName, minRange, atrValue);
+  }
+
+//+------------------------------------------------------------------+
+//| Пинбар со снятием ликвидности. true, если лимитка выставлена.     |
+//+------------------------------------------------------------------+
+bool TryPinBarEntry(const ENUM_SMC_TREND td, const string dirName,
+                    const double minRange, const double atrValue)
+  {
    SPinBar pb = DetectPinBar(_Symbol, PERIOD_H1, 1, InpMinTailRatio, minRange);
    if(!pb.valid)
      {
@@ -189,14 +214,13 @@ void OnTick()
          g_log.Rejected(dirName, StringFormat("pinbar_%s range=%.5f atr=%.5f minRange=%.5f tail=%.2f",
                                               PinBarRejectToString(pb.reject), pb.range, atrValue,
                                               minRange, pb.tailRatio));
-      return;
+      return(false);
      }
 
    if((td == SMC_TREND_BULL && pb.direction != 1) ||
       (td == SMC_TREND_BEAR && pb.direction != -1))
-      return;
+      return(false);
 
-   //--- новости
    if(InpUseNewsFilter)
      {
       string reason;
@@ -205,11 +229,11 @@ void OnTick()
          g_log.Rejected(dirName, "news: " + reason);
          if(InpVerboseLog)
             Print("Пропуск по новостям: ", reason);
-         return;
+         return(false);
         }
      }
 
-   //--- снятие ликвидности неснятого ранее уровня
+   //--- снятие ликвидности неснятого ранее уровня - требуется только у пинбара
    double level = 0.0;
    int    levelIdx = -1;
 
@@ -218,60 +242,113 @@ void OnTick()
       if(!g_structH1.LastUnsweptLow(level, levelIdx))
         {
          g_log.Rejected(dirName, "нет неснятого свинг-лоу");
-         return;
+         return(false);
         }
       if(!IsSweepDown(pb, level))
-         return;
+         return(false);
      }
    else
      {
       if(!g_structH1.LastUnsweptHigh(level, levelIdx))
         {
          g_log.Rejected(dirName, "нет неснятого свинг-хая");
-         return;
+         return(false);
         }
       if(!IsSweepUp(pb, level))
-         return;
+         return(false);
      }
 
-   //--- премиум / дискаунт
    double retracePct = 0.0;
-   if(InpUsePremiumFilter)
+   if(!CheckPremiumDiscount(td, dirName, pb.close, retracePct))
+      return(false);
+
+   if(!PlaceLimitOrder(td, pb, retracePct))
+      return(false);
+
+   //--- уровень израсходован, повторно не используется
+   if(td == SMC_TREND_BULL)
+      g_structH1.MarkLowSwept(levelIdx);
+   else
+      g_structH1.MarkHighSwept(levelIdx);
+
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| Поглощение по тренду. Снятие ликвидности не требуется.            |
+//+------------------------------------------------------------------+
+bool TryEngulfingEntry(const ENUM_SMC_TREND td, const string dirName,
+                       const double minRange, const double atrValue)
+  {
+   SEngulfing eg = DetectEngulfing(_Symbol, PERIOD_H1, 1, minRange, InpMinEngulfBodyRatio);
+   if(!eg.valid)
      {
-      double rLow, rHigh;
-      if(!g_structH1.RangeBounds(rLow, rHigh))
+      if(eg.reject == SMC_ENGULF_RANGE_TOO_SMALL || eg.reject == SMC_ENGULF_NOT_ENGULFING)
+         g_log.Rejected(dirName, StringFormat("engulf_%s range=%.5f atr=%.5f minRange=%.5f ratio=%.2f",
+                                              EngulfRejectToString(eg.reject), eg.high - eg.low,
+                                              atrValue, minRange, eg.bodyRatio));
+      return(false);
+     }
+
+   if((td == SMC_TREND_BULL && eg.direction != 1) ||
+      (td == SMC_TREND_BEAR && eg.direction != -1))
+      return(false);
+
+   if(InpUseNewsFilter)
+     {
+      string reason;
+      if(g_news.IsBlocked(reason))
         {
-         g_log.Rejected(dirName, "диапазон не определён");
-         return;
-        }
-
-      double span = rHigh - rLow;
-      if(span <= 0.0)
-         return;
-
-      if(td == SMC_TREND_BULL)
-         retracePct = (rHigh - pb.close) / span;      // насколько откатили от хая
-      else
-         retracePct = (pb.close - rLow) / span;       // насколько откатили от лоу
-
-      if(retracePct < InpMinRetracement)
-        {
-         g_log.Rejected(dirName, StringFormat("откат %.1f%% < %.1f%%",
-                                              retracePct * 100.0, InpMinRetracement * 100.0));
+         g_log.Rejected(dirName, "news: " + reason);
          if(InpVerboseLog)
-            PrintFormat("Пропуск: откат только %.1f%%", retracePct * 100.0);
-         return;
+            Print("Пропуск по новостям: ", reason);
+         return(false);
         }
      }
 
-   if(PlaceLimitOrder(td, pb, retracePct))
+   double retracePct = 0.0;
+   if(!CheckPremiumDiscount(td, dirName, eg.close, retracePct))
+      return(false);
+
+   return(PlaceEngulfLimitOrder(td, eg, retracePct));
+  }
+
+//+------------------------------------------------------------------+
+//| Общий фильтр премиум/дискаунт - для пинбара и поглощения одинаков.|
+//+------------------------------------------------------------------+
+bool CheckPremiumDiscount(const ENUM_SMC_TREND td, const string dirName,
+                          const double closePrice, double &retracePct)
+  {
+   retracePct = 0.0;
+   if(!InpUsePremiumFilter)
+      return(true);
+
+   double rLow, rHigh;
+   if(!g_structH1.RangeBounds(rLow, rHigh))
      {
-      //--- уровень израсходован, повторно не используется
-      if(td == SMC_TREND_BULL)
-         g_structH1.MarkLowSwept(levelIdx);
-      else
-         g_structH1.MarkHighSwept(levelIdx);
+      g_log.Rejected(dirName, "диапазон не определён");
+      return(false);
      }
+
+   double span = rHigh - rLow;
+   if(span <= 0.0)
+      return(false);
+
+   if(td == SMC_TREND_BULL)
+      retracePct = (rHigh - closePrice) / span;      // насколько откатили от хая
+   else
+      retracePct = (closePrice - rLow) / span;        // насколько откатили от лоу
+
+   if(retracePct < InpMinRetracement)
+     {
+      g_log.Rejected(dirName, StringFormat("откат %.1f%% < %.1f%%",
+                                           retracePct * 100.0, InpMinRetracement * 100.0));
+      if(InpVerboseLog)
+         PrintFormat("Пропуск: откат только %.1f%%", retracePct * 100.0);
+      return(false);
+     }
+
+   return(true);
   }
 
 //+------------------------------------------------------------------+
@@ -308,6 +385,51 @@ bool PlaceLimitOrder(const ENUM_SMC_TREND trend, const SPinBar &pb, const double
       tp = entry - (sl - entry) * InpRiskRewardRatio;
      }
 
+   return(SubmitLimitOrder(trend, entry, sl, tp, "pinbar", pb.tailRatio, retracePct,
+                           pb.time, pb.low, pb.high));
+  }
+
+//+------------------------------------------------------------------+
+//| Геометрия входа по поглощающей свече: откат в тело от close.      |
+//+------------------------------------------------------------------+
+bool PlaceEngulfLimitOrder(const ENUM_SMC_TREND trend, const SEngulfing &eg, const double retracePct)
+  {
+   double point  = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double buffer = InpSLBufferPoints * point;
+
+   double entry, sl, tp;
+
+   if(trend == SMC_TREND_BULL)
+     {
+      entry = eg.close - InpEngulfEntryRetrace * (eg.close - eg.open);
+      sl    = eg.low - buffer;
+      if(entry - sl <= 0.0)
+         return(false);
+      tp = entry + (entry - sl) * InpRiskRewardRatio;
+     }
+   else
+     {
+      entry = eg.close + InpEngulfEntryRetrace * (eg.open - eg.close);
+      sl    = eg.high + buffer;
+      if(sl - entry <= 0.0)
+         return(false);
+      tp = entry - (sl - entry) * InpRiskRewardRatio;
+     }
+
+   return(SubmitLimitOrder(trend, entry, sl, tp, "engulf", eg.bodyRatio, retracePct,
+                           eg.time, eg.low, eg.high));
+  }
+
+//+------------------------------------------------------------------+
+//| Общая часть выставления лимитки: проверки STOPS_LEVEL, лот, лог,  |
+//| отправка ордера. Используется и пинбаром, и поглощением.          |
+//+------------------------------------------------------------------+
+bool SubmitLimitOrder(const ENUM_SMC_TREND trend, double entry, double sl, double tp,
+                      const string setup, const double ratio, const double retracePct,
+                      const datetime barTime, const double barLow, const double barHigh)
+  {
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+
    entry = NormalizeDouble(entry, _Digits);
    sl    = NormalizeDouble(sl,    _Digits);
    tp    = NormalizeDouble(tp,    _Digits);
@@ -322,47 +444,48 @@ bool PlaceLimitOrder(const ENUM_SMC_TREND trend, const SPinBar &pb, const double
 
    if(trend == SMC_TREND_BULL && ask <= entry + minDist)
      {
-      g_log.Rejected(dirName, "цена ниже уровня лимитки");
+      g_log.Rejected(dirName, setup + ": цена ниже уровня лимитки");
       return(false);
      }
    if(trend == SMC_TREND_BEAR && bid >= entry - minDist)
      {
-      g_log.Rejected(dirName, "цена выше уровня лимитки");
+      g_log.Rejected(dirName, setup + ": цена выше уровня лимитки");
       return(false);
      }
 
    if(MathAbs(entry - sl) < minDist || MathAbs(tp - entry) < minDist)
      {
-      g_log.Rejected(dirName, "стоп/тейк ближе STOPS_LEVEL");
+      g_log.Rejected(dirName, setup + ": стоп/тейк ближе STOPS_LEVEL");
       return(false);
      }
 
    double lot = CalcLot(MathAbs(entry - sl));
    if(lot <= 0.0)
      {
-      g_log.Rejected(dirName, "лот = 0");
+      g_log.Rejected(dirName, setup + ": лот = 0");
       return(false);
      }
 
+   string comment = "SMC " + setup + " limit";
    bool ok = (trend == SMC_TREND_BULL)
-             ? g_trade.BuyLimit(lot, entry, _Symbol, sl, tp, ORDER_TIME_GTC, 0, "SMC pin limit")
-             : g_trade.SellLimit(lot, entry, _Symbol, sl, tp, ORDER_TIME_GTC, 0, "SMC pin limit");
+             ? g_trade.BuyLimit(lot, entry, _Symbol, sl, tp, ORDER_TIME_GTC, 0, comment)
+             : g_trade.SellLimit(lot, entry, _Symbol, sl, tp, ORDER_TIME_GTC, 0, comment);
 
    if(!ok)
      {
-      g_log.Rejected(dirName, StringFormat("retcode=%d", g_trade.ResultRetcode()));
-      PrintFormat("Ошибка выставления: %d %s", g_trade.ResultRetcode(),
+      g_log.Rejected(dirName, StringFormat("%s: retcode=%d", setup, g_trade.ResultRetcode()));
+      PrintFormat("Ошибка выставления (%s): %d %s", setup, g_trade.ResultRetcode(),
                   g_trade.ResultRetcodeDescription());
       return(false);
      }
 
-   g_log.Signal(dirName, entry, sl, tp, lot, pb.tailRatio, retracePct * 100.0);
-   PrintFormat("ЛИМИТКА %s entry=%.*f sl=%.*f tp=%.*f lot=%.*f tail=%.2f откат=%.1f%%",
-               dirName, _Digits, entry, _Digits, sl, _Digits, tp,
-               g_lotDigits, lot, pb.tailRatio, retracePct * 100.0);
+   g_log.Signal(setup, dirName, entry, sl, tp, lot, ratio, retracePct * 100.0);
+   PrintFormat("ЛИМИТКА(%s) %s entry=%.*f sl=%.*f tp=%.*f lot=%.*f ratio=%.2f откат=%.1f%%",
+               setup, dirName, _Digits, entry, _Digits, sl, _Digits, tp,
+               g_lotDigits, lot, ratio, retracePct * 100.0);
 
    if(InpDrawSignals)
-      DrawSignal(trend, pb, entry);
+      DrawSignal(trend, barTime, barLow, barHigh, entry);
 
    return(true);
   }
@@ -570,12 +693,13 @@ int CountOwnPendings(void)
   }
 
 //+------------------------------------------------------------------+
-void DrawSignal(const ENUM_SMC_TREND trend, const SPinBar &pb, const double entry)
+void DrawSignal(const ENUM_SMC_TREND trend, const datetime barTime, const double barLow,
+                const double barHigh, const double entry)
   {
-   string arrowName = StringFormat("SMC_sig_%d", (int)pb.time);
-   double anchor    = (trend == SMC_TREND_BULL) ? pb.low : pb.high;
+   string arrowName = StringFormat("SMC_sig_%d", (int)barTime);
+   double anchor    = (trend == SMC_TREND_BULL) ? barLow : barHigh;
 
-   if(ObjectCreate(0, arrowName, OBJ_ARROW, 0, pb.time, anchor))
+   if(ObjectCreate(0, arrowName, OBJ_ARROW, 0, barTime, anchor))
      {
       ObjectSetInteger(0, arrowName, OBJPROP_ARROWCODE, (trend == SMC_TREND_BULL) ? 233 : 234);
       ObjectSetInteger(0, arrowName, OBJPROP_COLOR,
@@ -585,9 +709,9 @@ void DrawSignal(const ENUM_SMC_TREND trend, const SPinBar &pb, const double entr
                        (trend == SMC_TREND_BULL) ? ANCHOR_TOP : ANCHOR_BOTTOM);
      }
 
-   string lineName = StringFormat("SMC_entry_%d", (int)pb.time);
-   datetime tEnd   = pb.time + PeriodSeconds(PERIOD_H1) * (MathMax(1, InpPendingLifeBars) + 1);
-   if(ObjectCreate(0, lineName, OBJ_TREND, 0, pb.time, entry, tEnd, entry))
+   string lineName = StringFormat("SMC_entry_%d", (int)barTime);
+   datetime tEnd   = barTime + PeriodSeconds(PERIOD_H1) * (MathMax(1, InpPendingLifeBars) + 1);
+   if(ObjectCreate(0, lineName, OBJ_TREND, 0, barTime, entry, tEnd, entry))
      {
       ObjectSetInteger(0, lineName, OBJPROP_COLOR, clrGoldenrod);
       ObjectSetInteger(0, lineName, OBJPROP_STYLE, STYLE_DOT);

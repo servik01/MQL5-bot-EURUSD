@@ -2,7 +2,13 @@
 
 Схема соответствует `OnTick()` в `SMC_PinSweep_EA.mq5` — порядок проверок и
 причины отказа именно такие, как в коде (и как попадают в `SIGNAL_REJECTED`
-в CSV-логе).
+в CSV-логе). Два триггера работают **параллельно и независимо**: на каждом
+баре проверяются оба — пинбар со снятием ликвидности (`TryPinBarEntry`) и
+поглощение по тренду без требования sweep (`TryEngulfingEntry`). Если сработали
+оба и есть свободное место по `InpMaxPositions`, встанут обе лимитки. Перед
+попыткой поглощения счётчик позиций/лимиток перепроверяется — так пинбар,
+успевший занять последний слот, не даёт поглощению превысить лимит.
+Фильтры тренда/спреда/ATR/новостей/премиум-дискаунта общие для обоих.
 
 ```mermaid
 flowchart TD
@@ -18,27 +24,68 @@ flowchart TD
     G -- нет --> X0
     G -- да --> H{Спред <= InpMaxSpreadPoints?}
     H -- нет --> X0
-    H -- да --> I{Диапазон свечи >= InpMinRangeATR * ATR?}
-    I -- нет --> R1[reason=pinbar_range]
-    I -- да --> J{Доминирующий хвост >= InpMinTailRatio?}
-    J -- нет --> R2[reason=pinbar_tail]
-    J -- да --> K{Направление пинбара == тренду?}
-    K -- нет --> X0
-    K -- да --> L{Новостное окно активно?}
-    L -- да --> R3["reason=news"]
-    L -- нет --> M{Есть неснятый свинг напротив входа?}
-    M -- нет --> R4[нет неснятого свинг-лоу/хая]
-    M -- да --> N{Хвост снял уровень, close вернулся внутрь?}
-    N -- нет --> X0
-    N -- да --> O{InpUsePremiumFilter: откат >= InpMinRetracement?}
-    O -- нет --> R5[reason=откат < InpMinRetracement]
-    O -- да --> P[PlaceLimitOrder]
-    P --> Q{Цена/стопы прошли проверки STOPS_LEVEL, лот > 0?}
-    Q -- нет --> X0
-    Q -- да --> S[BuyLimit / SellLimit,\nуровень помечается swept]
+    H -- да --> ATR[minRange = InpMinRangeATR * ATR]
 
-    R1 & R2 & R3 & R4 & R5 --> X0
+    subgraph PB [TryPinBarEntry]
+        I{Диапазон >= minRange?}
+        I -- нет --> R1[pinbar_range]
+        I -- да --> J{Хвост >= InpMinTailRatio?}
+        J -- нет --> R2[pinbar_tail]
+        J -- да --> K{Направление == тренду?}
+        K -- нет --> PBno1[нет]
+        K -- да --> L{Новости активны?}
+        L -- да --> R3[news]
+        L -- нет --> M{Есть неснятый свинг?}
+        M -- нет --> R4[нет уровня]
+        M -- да --> N{Уровень снят хвостом?}
+        N -- нет --> PBno2[нет]
+        N -- да --> O{Откат >= InpMinRetracement?}
+        O -- нет --> R5[откат мал]
+        O -- да --> PBok[PlaceLimitOrder]
+    end
+
+    ATR --> I
+    PBok --> S1{STOPS_LEVEL / лот ок?}
+    S1 -- да --> S[Пинбар: ордер выставлен,\nсвинг помечается swept]
+
+    EQ{InpUseEngulfing И есть место по InpMaxPositions?}
+    R1 --> EQ
+    R2 --> EQ
+    PBno1 --> EQ
+    R3 --> EQ
+    R4 --> EQ
+    PBno2 --> EQ
+    R5 --> EQ
+    S1 -- нет --> EQ
+    S --> EQ
+
+    EQ -- нет --> X0
+    EQ -- да --> I2
+
+    subgraph EG [TryEngulfingEntry]
+        I2{Диапазон >= minRange И тело >= InpMinEngulfBodyRatio * пред.?}
+        I2 -- нет --> R6[engulf_range / not_engulfing]
+        I2 -- да --> K2{Направление == тренду?}
+        K2 -- нет --> EGno[нет]
+        K2 -- да --> L2{Новости активны?}
+        L2 -- да --> R7[news]
+        L2 -- нет --> O2{Откат >= InpMinRetracement?}
+        O2 -- нет --> R8[откат мал]
+        O2 -- да --> EGok[PlaceEngulfLimitOrder]
+    end
+
+    EGok --> S2{STOPS_LEVEL / лот ок?}
+    S2 -- да --> S3[Поглощение: ордер выставлен]
+    S2 -- нет --> X0
+    R6 --> X0
+    EGno --> X0
+    R7 --> X0
+    R8 --> X0
 ```
+
+Поглощение **не требует** снятия ликвидности (шаги M/N у пинбара) — только
+совпадение направления с трендом D1+H1, тот же ATR-фильтр размера свечи и
+тот же фильтр премиум/дискаунт.
 
 ## Геометрия входа (пинбар BULL)
 
@@ -69,3 +116,19 @@ high + буфер, тейк вниз от входа на `InpRiskRewardRatio` �
 `InpEntryRetrace = 0` — вход от края тела (сразу на границе тела и хвоста),
 чем больше значение, тем глубже внутрь хвоста и тем реже цена доходит
 до уровня за `InpPendingLifeBars` баров.
+
+## Геометрия входа (поглощение BULL)
+
+```
+       close ──┐
+               │  тело поглощающей свечи
+        entry ─┤  ← close − InpEngulfEntryRetrace * (close − open)
+               │
+        open ──┘
+                  sl = low − InpSLBufferPoints
+                  tp = entry + (entry − sl) * InpRiskRewardRatio
+```
+
+`InpEngulfEntryRetrace = 0` — вход по цене close (агрессивно, без отката),
+`= 1` — откат до open (глубоко, реже исполняется). Для BEAR всё зеркально:
+откат от close вниз к open, стоп над high + буфер.
