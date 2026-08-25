@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 480" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <style>
+    .surface   { fill: #fcfcfb; }
+    .title     { fill: #0b0b0b; font-size: 18px; font-weight: 600; }
+    .subtitle  { fill: #52514e; font-size: 12px; }
+    .label     { fill: #0b0b0b; font-size: 12px; }
+    .label-sm  { fill: #52514e; font-size: 11px; }
+    .level     { stroke-width: 1.5; stroke-dasharray: 5 4; fill: none; }
+    .bracket   { stroke: #898781; stroke-width: 1; fill: none; }
+  </style>
+
+  <rect class="surface" width="960" height="480" rx="6"/>
+
+  <text x="24" y="28" class="title">Вход BUY: снятие свинг-лоу пинбаром</text>
+  <text x="24" y="46" class="subtitle">SMC PinSweep EA — реальная сделка из бэктеста, EURUSD H1, 2026.02.03 17:00</text>
+
+  <!-- price levels (top to bottom): TP, swept swing-low, entry, SL -->
+  <line x1="90" y1="70"  x2="560" y2="70"  class="level" stroke="#0ca30c"/>
+  <line x1="90" y1="305" x2="560" y2="305" class="level" stroke="#898781"/>
+  <line x1="90" y1="270" x2="560" y2="270" class="level" stroke="#2a78d6"/>
+  <line x1="90" y1="365" x2="560" y2="365" class="level" stroke="#d03b3b"/>
+
+  <text x="575" y="74"  class="label">TP  1.18037</text>
+  <text x="575" y="274" class="label">entry  1.17865</text>
+  <text x="575" y="309" class="label-sm">снятый свинг-лоу</text>
+  <text x="575" y="369" class="label">SL  1.17779</text>
+
+  <!-- reference candle: the earlier swing low that gets swept -->
+  <line x1="140" y1="270" x2="140" y2="312" stroke="#898781" stroke-width="1.5"/>
+  <rect x="123" y="280" width="34" height="25" fill="#e1e0d9" stroke="#898781" stroke-width="1.5"/>
+  <text x="140" y="330" text-anchor="middle" class="label-sm">свинг-лоу</text>
+  <text x="140" y="343" text-anchor="middle" class="label-sm">(H1, N баров назад)</text>
+
+  <!-- pin bar candle -->
+  <line x1="420" y1="140" x2="420" y2="340" stroke="#2a78d6" stroke-width="2"/>
+  <rect x="395" y="175" width="50" height="60" fill="#cde2fb" stroke="#2a78d6" stroke-width="2"/>
+  <text x="420" y="130" text-anchor="middle" class="label-sm">high</text>
+  <text x="420" y="356" text-anchor="middle" class="label-sm">low</text>
+
+  <!-- sweep annotation, placed clear of the price-label column -->
+  <line x1="420" y1="345" x2="420" y2="378" stroke="#52514e" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <text x="420" y="394" text-anchor="middle" class="label-sm">хвост пробил уровень,</text>
+  <text x="420" y="407" text-anchor="middle" class="label-sm">close вернулся выше</text>
+
+  <!-- entry retrace annotation -->
+  <path d="M 380 235 L 380 270" stroke="#2a78d6" stroke-width="1.2" stroke-dasharray="2 3"/>
+  <text x="330" y="247" text-anchor="end" class="label-sm">InpEntryRetrace</text>
+  <text x="330" y="260" text-anchor="end" class="label-sm">от края тела</text>
+
+  <!-- risk / reward brackets, clear of the price-label column -->
+  <path class="bracket" d="M 700 270 L 708 270 L 708 365 L 700 365"/>
+  <text x="714" y="322" class="label-sm">риск (SL)</text>
+
+  <path class="bracket" d="M 760 70 L 768 70 L 768 270 L 760 270"/>
+  <text x="774" y="174" class="label-sm">R:R × InpRiskRewardRatio</text>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#52514e"/>
+    </marker>
+  </defs>
+
+  <text x="24" y="446" class="label-sm">tp = entry + (entry − sl) × InpRiskRewardRatio · sl = low − InpSLBufferPoints · entry = bodyBottom − InpEntryRetrace × lowerTail</text>
+  <text x="24" y="462" class="label-sm">Схема не в масштабе цены — точный порядок проверок в ENTRY_LOGIC.md.</text>
+</svg>
