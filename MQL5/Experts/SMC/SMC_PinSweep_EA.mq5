@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                            SMC_PinSweep_EA.mq5    |
-//|  Тренд D1+H1 по структуре, вход лимиткой от пинбара со снятием    |
+//|  Тренд по структуре на старшем ТФ + ТФ входа, вход лимиткой от    |
 //|  ликвидности в зоне дискаунта. R:R фиксированный.                 |
 //+------------------------------------------------------------------+
 #property copyright "SMC PinSweep"
@@ -15,15 +15,17 @@
 #include <SMC\TradeLogger.mqh>
 
 input group "=== Структура (тренд) ==="
-input int      InpSwingBarsD1      = 2;        // D1: окно фрактала
-input int      InpSwingBarsH1      = 2;        // H1: окно фрактала
+input ENUM_TIMEFRAMES InpTrendTF   = PERIOD_H4; // Старший ТФ тренда (был D1)
+input ENUM_TIMEFRAMES InpEntryTF   = PERIOD_H1; // ТФ входа/сигнала
+input int      InpSwingBarsD1      = 2;        // Старший ТФ: окно фрактала
+input int      InpSwingBarsH1      = 2;        // ТФ входа: окно фрактала
 input bool     InpBreakByClose     = true;     // Пробой структуры по close
-input int      InpHistoryBarsH1    = 120;      // Глубина истории свингов H1, баров (неделя)
-input int      InpHistoryBarsD1    = 40;       // Глубина истории свингов D1, баров
+input int      InpHistoryBarsH1    = 120;      // Глубина истории свингов на ТФ входа, баров
+input int      InpHistoryBarsD1    = 40;       // Глубина истории свингов на старшем ТФ, баров
 
 input group "=== Пинбар ==="
 input double   InpMinTailRatio     = 0.40;     // Мин. доля хвоста от диапазона
-input double   InpMinRangeATR      = 0.50;     // Мин. диапазон свечи в долях ATR(14) H1
+input double   InpMinRangeATR      = 0.50;     // Мин. диапазон свечи в долях ATR(14) на ТФ входа
 input int      InpATRPeriod        = 14;       // Период ATR
 
 input group "=== Поглощение ==="
@@ -37,7 +39,7 @@ input double   InpMinRetracement   = 0.40;     // Мин. откат от хая
 
 input group "=== Вход ==="
 input double   InpEntryRetrace     = 0.40;     // Откат в хвост от края тела
-input int      InpPendingLifeBars  = 1;        // Жизнь лимитки, баров H1
+input int      InpPendingLifeBars  = 1;        // Жизнь лимитки, баров ТФ входа
 
 input group "=== Риск ==="
 input double   InpRiskRewardRatio  = 3.0;      // R:R
@@ -98,12 +100,12 @@ int OnInit()
    g_trade.SetDeviationInPoints(20);
    g_trade.SetTypeFillingBySymbol(_Symbol);
 
-   if(!g_structD1.Init(_Symbol, PERIOD_D1, InpSwingBarsD1, InpBreakByClose, InpHistoryBarsD1))
+   if(!g_structD1.Init(_Symbol, InpTrendTF, InpSwingBarsD1, InpBreakByClose, InpHistoryBarsD1))
       return(INIT_FAILED);
-   if(!g_structH1.Init(_Symbol, PERIOD_H1, InpSwingBarsH1, InpBreakByClose, InpHistoryBarsH1))
+   if(!g_structH1.Init(_Symbol, InpEntryTF, InpSwingBarsH1, InpBreakByClose, InpHistoryBarsH1))
       return(INIT_FAILED);
 
-   g_atrHandle = iATR(_Symbol, PERIOD_H1, InpATRPeriod);
+   g_atrHandle = iATR(_Symbol, InpEntryTF, InpATRPeriod);
    if(g_atrHandle == INVALID_HANDLE)
      {
       Print("Не удалось создать хэндл ATR");
@@ -150,7 +152,7 @@ void OnTick()
       return;
      }
 
-   datetime cur = iTime(_Symbol, PERIOD_H1, 0);
+   datetime cur = iTime(_Symbol, InpEntryTF, 0);
    if(cur == 0 || cur == g_lastBarH1)
       return;
    g_lastBarH1 = cur;
@@ -161,8 +163,9 @@ void OnTick()
    g_structH1.Update();
 
    if(InpVerboseLog)
-      PrintFormat("[%s] D1=%s H1=%s", TimeToString(cur),
-                  g_structD1.TrendToString(), g_structH1.TrendToString());
+      PrintFormat("[%s] %s=%s %s=%s", TimeToString(cur),
+                  EnumToString(InpTrendTF), g_structD1.TrendToString(),
+                  EnumToString(InpEntryTF), g_structH1.TrendToString());
 
    if(CountOwnPositions() + CountOwnPendings() >= InpMaxPositions)
       return;
@@ -206,7 +209,7 @@ void OnTick()
 bool TryPinBarEntry(const ENUM_SMC_TREND td, const string dirName,
                     const double minRange, const double atrValue)
   {
-   SPinBar pb = DetectPinBar(_Symbol, PERIOD_H1, 1, InpMinTailRatio, minRange);
+   SPinBar pb = DetectPinBar(_Symbol, InpEntryTF, 1, InpMinTailRatio, minRange);
    if(!pb.valid)
      {
       //--- причина и числа в лог - материал для калибровки InpMinRangeATR/InpMinTailRatio
@@ -280,7 +283,7 @@ bool TryPinBarEntry(const ENUM_SMC_TREND td, const string dirName,
 bool TryEngulfingEntry(const ENUM_SMC_TREND td, const string dirName,
                        const double minRange, const double atrValue)
   {
-   SEngulfing eg = DetectEngulfing(_Symbol, PERIOD_H1, 1, minRange, InpMinEngulfBodyRatio);
+   SEngulfing eg = DetectEngulfing(_Symbol, InpEntryTF, 1, minRange, InpMinEngulfBodyRatio);
    if(!eg.valid)
      {
       if(eg.reject == SMC_ENGULF_RANGE_TOO_SMALL || eg.reject == SMC_ENGULF_NOT_ENGULFING)
@@ -512,7 +515,7 @@ void ExpirePendingOrders(void)
          continue;
 
       datetime setup    = (datetime)OrderGetInteger(ORDER_TIME_SETUP);
-      int      setupBar = iBarShift(_Symbol, PERIOD_H1, setup);
+      int      setupBar = iBarShift(_Symbol, InpEntryTF, setup);
       if(setupBar < 0 || setupBar < life)
          continue;
 
@@ -710,7 +713,7 @@ void DrawSignal(const ENUM_SMC_TREND trend, const datetime barTime, const double
      }
 
    string lineName = StringFormat("SMC_entry_%d", (int)barTime);
-   datetime tEnd   = barTime + PeriodSeconds(PERIOD_H1) * (MathMax(1, InpPendingLifeBars) + 1);
+   datetime tEnd   = barTime + PeriodSeconds(InpEntryTF) * (MathMax(1, InpPendingLifeBars) + 1);
    if(ObjectCreate(0, lineName, OBJ_TREND, 0, barTime, entry, tEnd, entry))
      {
       ObjectSetInteger(0, lineName, OBJPROP_COLOR, clrGoldenrod);
