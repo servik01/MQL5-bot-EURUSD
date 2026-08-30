@@ -31,6 +31,7 @@ input int      InpATRPeriod        = 14;       // Период ATR
 input group "=== Поглощение ==="
 input bool     InpUseEngulfing       = true;     // Альтернативный вход по поглощению
 input double   InpMinEngulfBodyRatio = 1.0;      // Мин. отношение тела к предыдущему
+input double   InpMaxEngulfBodyRatio = 2.5;      // Макс. отношение тела к предыдущему (0 = без потолка)
 input double   InpEngulfEntryRetrace = 0.50;     // Откат в тело поглощающей свечи
 
 input group "=== Премиум / дискаунт ==="
@@ -283,10 +284,12 @@ bool TryPinBarEntry(const ENUM_SMC_TREND td, const string dirName,
 bool TryEngulfingEntry(const ENUM_SMC_TREND td, const string dirName,
                        const double minRange, const double atrValue)
   {
-   SEngulfing eg = DetectEngulfing(_Symbol, InpEntryTF, 1, minRange, InpMinEngulfBodyRatio);
+   SEngulfing eg = DetectEngulfing(_Symbol, InpEntryTF, 1, minRange,
+                                   InpMinEngulfBodyRatio, InpMaxEngulfBodyRatio);
    if(!eg.valid)
      {
-      if(eg.reject == SMC_ENGULF_RANGE_TOO_SMALL || eg.reject == SMC_ENGULF_NOT_ENGULFING)
+      if(eg.reject == SMC_ENGULF_RANGE_TOO_SMALL || eg.reject == SMC_ENGULF_NOT_ENGULFING ||
+         eg.reject == SMC_ENGULF_BODY_TOO_BIG)
          g_log.Rejected(dirName, StringFormat("engulf_%s range=%.5f atr=%.5f minRange=%.5f ratio=%.2f",
                                               EngulfRejectToString(eg.reject), eg.high - eg.low,
                                               atrValue, minRange, eg.bodyRatio));

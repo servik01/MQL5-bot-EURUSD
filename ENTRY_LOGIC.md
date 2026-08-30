@@ -63,7 +63,7 @@ flowchart TD
     EQ -- да --> I2
 
     subgraph EG [TryEngulfingEntry]
-        I2{Диапазон >= minRange И тело >= InpMinEngulfBodyRatio * пред.?}
+        I2{Диапазон >= minRange И тело в [InpMinEngulfBodyRatio, InpMaxEngulfBodyRatio] * пред.?}
         I2 -- нет --> R6[engulf_range / not_engulfing]
         I2 -- да --> K2{Направление == тренду?}
         K2 -- нет --> EGno[нет]

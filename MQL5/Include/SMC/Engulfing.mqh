@@ -11,7 +11,8 @@ enum ENUM_SMC_ENGULF_REJECT
    SMC_ENGULF_OK = 0,
    SMC_ENGULF_NO_DATA,
    SMC_ENGULF_RANGE_TOO_SMALL,
-   SMC_ENGULF_NOT_ENGULFING
+   SMC_ENGULF_NOT_ENGULFING,
+   SMC_ENGULF_BODY_TOO_BIG
   };
 
 struct SEngulfing
@@ -36,6 +37,7 @@ string EngulfRejectToString(const ENUM_SMC_ENGULF_REJECT reason)
       case SMC_ENGULF_NO_DATA:          return("no_data");
       case SMC_ENGULF_RANGE_TOO_SMALL:  return("range");
       case SMC_ENGULF_NOT_ENGULFING:    return("not_engulfing");
+      case SMC_ENGULF_BODY_TOO_BIG:     return("body_too_big");
       default:                          return("unknown");
      }
   }
@@ -44,10 +46,13 @@ string EngulfRejectToString(const ENUM_SMC_ENGULF_REJECT reason)
 //| minRange     - минимальный диапазон свечи, как у пинбара (0 = без)|
 //| minBodyRatio - во сколько раз тело текущей свечи должно быть      |
 //|                больше тела предыдущей (1.0 = просто поглощение)   |
+//| maxBodyRatio - верхняя граница того же отношения (0 = без потолка)|
+//|                огромные поглощения чаще похожи на истощение,      |
+//|                чем на продолжение движения - см. OPEN_QUESTIONS.md|
 //+------------------------------------------------------------------+
 SEngulfing DetectEngulfing(const string symbol, const ENUM_TIMEFRAMES tf,
                            const int shift, const double minRange,
-                           const double minBodyRatio)
+                           const double minBodyRatio, const double maxBodyRatio)
   {
    SEngulfing e;
    e.valid     = false;
@@ -97,6 +102,11 @@ SEngulfing DetectEngulfing(const string symbol, const ENUM_TIMEFRAMES tf,
 
    if(bullish && e.bodyRatio >= minBodyRatio)
      {
+      if(maxBodyRatio > 0.0 && e.bodyRatio > maxBodyRatio)
+        {
+         e.reject = SMC_ENGULF_BODY_TOO_BIG;
+         return(e);
+        }
       e.valid     = true;
       e.direction = 1;
       e.reject    = SMC_ENGULF_OK;
@@ -104,6 +114,11 @@ SEngulfing DetectEngulfing(const string symbol, const ENUM_TIMEFRAMES tf,
      }
    if(bearish && e.bodyRatio >= minBodyRatio)
      {
+      if(maxBodyRatio > 0.0 && e.bodyRatio > maxBodyRatio)
+        {
+         e.reject = SMC_ENGULF_BODY_TOO_BIG;
+         return(e);
+        }
       e.valid     = true;
       e.direction = -1;
       e.reject    = SMC_ENGULF_OK;
