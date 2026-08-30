@@ -95,6 +95,15 @@ int OnInit()
       Print("InpEngulfEntryRetrace должен быть в [0.0 .. 1.0)");
       return(INIT_PARAMETERS_INCORRECT);
      }
+   //--- CSwingStructure::Update() смотрит только на shift=1 относительно своего
+   //--- последнего обработанного бара; если InpEntryTF грубее InpTrendTF, внешний
+   //--- гейт OnTick (по InpEntryTF) будет звать g_structD1.Update() реже её
+   //--- собственных баров, и она молча пропустит промежуточные свинги/пробои.
+   if(PeriodSeconds(InpEntryTF) > PeriodSeconds(InpTrendTF))
+     {
+      Print("InpEntryTF должен быть не грубее InpTrendTF (иначе тихо теряются бары структуры)");
+      return(INIT_PARAMETERS_INCORRECT);
+     }
 
    g_trade.SetExpertMagicNumber(InpMagic);
    g_trade.SetDeviationInPoints(20);
@@ -224,17 +233,8 @@ bool TryPinBarEntry(const ENUM_SMC_TREND td, const string dirName,
       (td == SMC_TREND_BEAR && pb.direction != -1))
       return(false);
 
-   if(InpUseNewsFilter)
-     {
-      string reason;
-      if(g_news.IsBlocked(reason))
-        {
-         g_log.Rejected(dirName, "news: " + reason);
-         if(InpVerboseLog)
-            Print("Пропуск по новостям: ", reason);
-         return(false);
-        }
-     }
+   if(!CheckNewsFilter(dirName))
+      return(false);
 
    //--- снятие ликвидности неснятого ранее уровня - требуется только у пинбара
    double level = 0.0;
@@ -297,23 +297,34 @@ bool TryEngulfingEntry(const ENUM_SMC_TREND td, const string dirName,
       (td == SMC_TREND_BEAR && eg.direction != -1))
       return(false);
 
-   if(InpUseNewsFilter)
-     {
-      string reason;
-      if(g_news.IsBlocked(reason))
-        {
-         g_log.Rejected(dirName, "news: " + reason);
-         if(InpVerboseLog)
-            Print("Пропуск по новостям: ", reason);
-         return(false);
-        }
-     }
+   if(!CheckNewsFilter(dirName))
+      return(false);
 
    double retracePct = 0.0;
    if(!CheckPremiumDiscount(td, dirName, eg.close, retracePct))
       return(false);
 
    return(PlaceEngulfLimitOrder(td, eg, retracePct));
+  }
+
+//+------------------------------------------------------------------+
+//| Общий фильтр новостей - для пинбара и поглощения одинаков.        |
+//+------------------------------------------------------------------+
+bool CheckNewsFilter(const string dirName)
+  {
+   if(!InpUseNewsFilter)
+      return(true);
+
+   string reason;
+   if(g_news.IsBlocked(reason))
+     {
+      g_log.Rejected(dirName, "news: " + reason);
+      if(InpVerboseLog)
+         Print("Пропуск по новостям: ", reason);
+      return(false);
+     }
+
+   return(true);
   }
 
 //+------------------------------------------------------------------+
