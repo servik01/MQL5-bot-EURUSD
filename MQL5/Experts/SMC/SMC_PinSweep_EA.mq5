@@ -46,7 +46,7 @@ input double   InpEntryRetrace     = 0.40;     // Откат в хвост от 
 input int      InpPendingLifeBars  = 1;        // Жизнь лимитки, баров ТФ входа
 
 input group "=== Риск ==="
-input double   InpRiskRewardRatio  = 3.0;      // R:R
+input double   InpRiskRewardRatio  = 4.0;      // R:R
 input double   InpRiskPercent      = 0.5;      // Риск на сделку, %
 input double   InpFixedLot         = 0.01;     // Фикс. лот (если риск % = 0)
 input int      InpSLBufferPoints   = 20;       // Буфер стопа, пунктов
