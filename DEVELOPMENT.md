@@ -24,8 +24,17 @@ cp scripts/mt5.env.example scripts/mt5.env
 Найти каталог данных: в MT5 меню `Файл -> Открыть каталог данных`. На macOS под
 CrossOver это путь внутри бутылки, вида
 `.../Bottles/<имя>/drive_c/users/crossover/AppData/Roaming/MetaQuotes/Terminal/<HASH>`.
+Если стоит нативный macOS-билд MT5 от MetaQuotes (не CrossOver) — это Wine-бутылка
+`~/Library/Application Support/net.metaquotes.wine.metatrader5`, в портативном
+режиме (`MQL5`/`config`/`Tester` лежат прямо внутри `Program Files/MetaTrader 5`).
+Оба варианта в `scripts/mt5.env.example`.
 
 `scripts/mt5.env` в git не попадает — пути у каждого свои.
+
+Компиляция через `scripts/compile.sh` (wine CLI) в песочнице/трассируемом окружении
+может зависать на диалоге "A debugger has been found running in your system" —
+ложное срабатывание защиты MT5 от отладки на что-то похожее на дебаггер в песочнице.
+Если так — компилировать вручную в открытом MetaEditor (`F7`), это работает надёжно.
 
 ## Задачи Zed
 
