@@ -39,7 +39,7 @@ flowchart TD
         M -- нет --> R4[нет уровня]
         M -- да --> N{Уровень снят хвостом?}
         N -- нет --> PBno2[нет]
-        N -- да --> O{Откат >= InpMinRetracement?}
+        N -- да --> O{Откат >= InpMinRetracement И вне [InpPinbarDeadZoneLow, InpPinbarDeadZoneHigh)?}
         O -- нет --> R5[откат мал]
         O -- да --> PBok[PlaceLimitOrder]
     end

@@ -36,8 +36,10 @@ input double   InpEngulfEntryRetrace = 0.50;     // Откат в тело по�
 input double   InpMaxEngulfRetracement = 0.70;   // Макс. откат premium/discount для поглощения (0 = без потолка)
 
 input group "=== Премиум / дискаунт ==="
-input bool     InpUsePremiumFilter = true;     // Требовать откат от экстремума
-input double   InpMinRetracement   = 0.40;     // Мин. откат от хая/лоу диапазона
+input bool     InpUsePremiumFilter    = true;  // Требовать откат от экстремума
+input double   InpMinRetracement      = 0.40;  // Мин. откат от хая/лоу диапазона
+input double   InpPinbarDeadZoneLow   = 0.65;  // Пинбар: начало мёртвой зоны отката (0 = без выреза)
+input double   InpPinbarDeadZoneHigh  = 0.90;  // Пинбар: конец мёртвой зоны отката
 
 input group "=== Вход ==="
 input double   InpEntryRetrace     = 0.40;     // Откат в хвост от края тела
@@ -100,6 +102,12 @@ int OnInit()
    if(InpMaxEngulfRetracement > 0.0 && InpMaxEngulfRetracement <= InpMinRetracement)
      {
       Print("InpMaxEngulfRetracement должен быть больше InpMinRetracement (или 0, чтобы отключить)");
+      return(INIT_PARAMETERS_INCORRECT);
+     }
+   if(InpPinbarDeadZoneHigh > InpPinbarDeadZoneLow &&
+      (InpPinbarDeadZoneLow < 0.0 || InpPinbarDeadZoneHigh >= 1.0))
+     {
+      Print("InpPinbarDeadZoneLow/High должны быть в [0.0 .. 1.0)");
       return(INIT_PARAMETERS_INCORRECT);
      }
    //--- CSwingStructure::Update() смотрит только на shift=1 относительно своего
@@ -269,7 +277,8 @@ bool TryPinBarEntry(const ENUM_SMC_TREND td, const string dirName,
      }
 
    double retracePct = 0.0;
-   if(!CheckPremiumDiscount(td, dirName, pb.close, 0.0, retracePct))
+   if(!CheckPremiumDiscount(td, dirName, pb.close, 0.0,
+                            InpPinbarDeadZoneLow, InpPinbarDeadZoneHigh, retracePct))
       return(false);
 
    if(!PlaceLimitOrder(td, pb, retracePct))
@@ -310,7 +319,8 @@ bool TryEngulfingEntry(const ENUM_SMC_TREND td, const string dirName,
       return(false);
 
    double retracePct = 0.0;
-   if(!CheckPremiumDiscount(td, dirName, eg.close, InpMaxEngulfRetracement, retracePct))
+   if(!CheckPremiumDiscount(td, dirName, eg.close, InpMaxEngulfRetracement,
+                            0.0, 0.0, retracePct))
       return(false);
 
    return(PlaceEngulfLimitOrder(td, eg, retracePct));
@@ -337,12 +347,14 @@ bool CheckNewsFilter(const string dirName)
   }
 
 //+------------------------------------------------------------------+
-//| Общий фильтр премиум/дискаунт - нижняя граница одна на оба сетапа,|
-//| верхняя (maxRetrace) опциональна и своя у вызывающей стороны:     |
-//| у пинбара глубокий откат работает лучше, у поглощения - хуже.     |
+//| Общий фильтр премиум/дискаунт - нижняя граница одна на оба сетапа, |
+//| верхняя (maxRetrace) и мёртвая зона (deadZoneLow/High) опциональны |
+//| и свои у вызывающей стороны: у пинбара глубокий откат работает    |
+//| лучше, у поглощения - хуже, а у пинбара ещё и провал в середине.  |
 //+------------------------------------------------------------------+
 bool CheckPremiumDiscount(const ENUM_SMC_TREND td, const string dirName,
                           const double closePrice, const double maxRetrace,
+                          const double deadZoneLow, const double deadZoneHigh,
                           double &retracePct)
   {
    retracePct = 0.0;
@@ -380,6 +392,15 @@ bool CheckPremiumDiscount(const ENUM_SMC_TREND td, const string dirName,
                                            retracePct * 100.0, maxRetrace * 100.0));
       if(InpVerboseLog)
          PrintFormat("Пропуск: откат слишком глубокий %.1f%%", retracePct * 100.0);
+      return(false);
+     }
+
+   if(deadZoneHigh > deadZoneLow && retracePct >= deadZoneLow && retracePct < deadZoneHigh)
+     {
+      g_log.Rejected(dirName, StringFormat("откат %.1f%% в мёртвой зоне [%.1f%%..%.1f%%)",
+                                           retracePct * 100.0, deadZoneLow * 100.0, deadZoneHigh * 100.0));
+      if(InpVerboseLog)
+         PrintFormat("Пропуск: откат %.1f%% в мёртвой зоне", retracePct * 100.0);
       return(false);
      }
 
