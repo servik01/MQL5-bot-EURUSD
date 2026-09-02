@@ -53,6 +53,14 @@ input int      InpSLBufferPoints   = 20;       // Буфер стопа, пун�
 input int      InpMaxSpreadPoints  = 30;       // Макс. спред, пунктов
 input int      InpMaxPositions     = 1;        // Макс. позиций + лимиток
 
+input group "=== Управление сделкой ==="
+input bool     InpUseBreakeven          = false; // Перенос в безубыток
+input double   InpBreakevenTriggerR     = 1.0;   // При каком R (от изначального риска) переносить
+input int      InpBreakevenBufferPoints = 0;     // Буфер сверх входа при переносе, пунктов
+input bool     InpUseTrailingStop       = false; // Трейлинг-стоп
+input double   InpTrailingStartR        = 1.5;   // При каком R начинать трейлинг
+input int      InpTrailingDistancePoints = 200;  // Дистанция трейлинга от цены, пунктов
+
 input group "=== Новости ==="
 input bool     InpUseNewsFilter    = true;     // Фильтр новостей
 input int      InpNewsHourServer   = 14;       // Час новости, время сервера (сейчас UTC+2)
@@ -80,6 +88,13 @@ CTradeLogger     g_log;
 datetime         g_lastBarH1 = 0;
 int              g_atrHandle = INVALID_HANDLE;
 int              g_lotDigits = 2;
+
+//--- состояние открытых позиций для б/у и трейлинга: изначальный риск
+//--- фиксируется на момент филла и не пересчитывается, даже если стоп
+//--- потом подвинулся - иначе R-мультипл потерял бы смысл.
+ulong            g_posTicket[];
+double           g_posInitialRisk[];
+bool             g_posBreakevenDone[];
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -117,6 +132,16 @@ int OnInit()
    if(PeriodSeconds(InpEntryTF) > PeriodSeconds(InpTrendTF))
      {
       Print("InpEntryTF должен быть не грубее InpTrendTF (иначе тихо теряются бары структуры)");
+      return(INIT_PARAMETERS_INCORRECT);
+     }
+   if(InpUseBreakeven && InpBreakevenTriggerR < 0.0)
+     {
+      Print("InpBreakevenTriggerR должен быть >= 0");
+      return(INIT_PARAMETERS_INCORRECT);
+     }
+   if(InpUseTrailingStop && (InpTrailingStartR < 0.0 || InpTrailingDistancePoints <= 0))
+     {
+      Print("InpTrailingStartR должен быть >= 0, InpTrailingDistancePoints > 0");
       return(INIT_PARAMETERS_INCORRECT);
      }
 
@@ -175,6 +200,9 @@ void OnTick()
       CloseEverything("выходные");
       return;
      }
+
+   //--- б/у и трейлинг реагируют на каждый тик, не дожидаясь закрытия бара
+   ManageOpenPositions();
 
    datetime cur = iTime(_Symbol, InpEntryTF, 0);
    if(cur == 0 || cur == g_lastBarH1)
@@ -547,6 +575,124 @@ bool SubmitLimitOrder(const ENUM_SMC_TREND trend, double entry, double sl, doubl
   }
 
 //+------------------------------------------------------------------+
+//| Перенос в безубыток и трейлинг открытых позиций. Стоп двигается   |
+//| только вперёд (в сторону прибыли), никогда назад. R считается от  |
+//| изначального риска на момент филла, не от текущего стопа.         |
+//+------------------------------------------------------------------+
+void ManageOpenPositions(void)
+  {
+   if(!InpUseBreakeven && !InpUseTrailingStop)
+      return;
+
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0)
+         continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol || PositionGetInteger(POSITION_MAGIC) != InpMagic)
+         continue;
+
+      int idx = FindPositionState(ticket);
+      if(idx < 0)
+         continue;
+
+      double initialRisk = g_posInitialRisk[idx];
+      if(initialRisk <= 0.0)
+         continue;
+
+      long   type = PositionGetInteger(POSITION_TYPE);
+      double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl   = PositionGetDouble(POSITION_SL);
+      double tp   = PositionGetDouble(POSITION_TP);
+      double curPrice = (type == POSITION_TYPE_BUY)
+                        ? SymbolInfoDouble(_Symbol, SYMBOL_BID)
+                        : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+      double profitDist = (type == POSITION_TYPE_BUY) ? (curPrice - open) : (open - curPrice);
+      double rMultiple  = profitDist / initialRisk;
+
+      double newSl = sl;
+
+      if(InpUseBreakeven && !g_posBreakevenDone[idx] && rMultiple >= InpBreakevenTriggerR)
+        {
+         double beSl = (type == POSITION_TYPE_BUY)
+                      ? open + InpBreakevenBufferPoints * point
+                      : open - InpBreakevenBufferPoints * point;
+         bool   better = (type == POSITION_TYPE_BUY) ? (beSl > newSl) : (beSl < newSl);
+         if(better)
+           {
+            newSl = beSl;
+            g_posBreakevenDone[idx] = true;
+           }
+        }
+
+      if(InpUseTrailingStop && rMultiple >= InpTrailingStartR)
+        {
+         double trailSl = (type == POSITION_TYPE_BUY)
+                         ? curPrice - InpTrailingDistancePoints * point
+                         : curPrice + InpTrailingDistancePoints * point;
+         bool   better = (type == POSITION_TYPE_BUY) ? (trailSl > newSl) : (trailSl < newSl);
+         if(better)
+            newSl = trailSl;
+        }
+
+      if(newSl == sl)
+         continue;
+
+      newSl = NormalizeDouble(newSl, _Digits);
+      if(newSl == sl)
+         continue;
+
+      if(g_trade.PositionModify(ticket, newSl, tp))
+         g_log.Write("SL_MODIFIED", StringFormat("ticket=%I64u sl=%.5f r=%.2f", ticket, newSl, rMultiple));
+      else
+         PrintFormat("Не удалось подвинуть стоп #%I64u: retcode=%d", ticket, g_trade.ResultRetcode());
+     }
+  }
+
+//+------------------------------------------------------------------+
+int FindPositionState(const ulong ticket)
+  {
+   for(int i = ArraySize(g_posTicket) - 1; i >= 0; i--)
+      if(g_posTicket[i] == ticket)
+         return(i);
+   return(-1);
+  }
+
+//+------------------------------------------------------------------+
+void AddPositionState(const ulong ticket, const double initialRisk)
+  {
+   if(FindPositionState(ticket) >= 0)
+      return;
+
+   int n = ArraySize(g_posTicket);
+   ArrayResize(g_posTicket, n + 1);
+   ArrayResize(g_posInitialRisk, n + 1);
+   ArrayResize(g_posBreakevenDone, n + 1);
+   g_posTicket[n]        = ticket;
+   g_posInitialRisk[n]   = initialRisk;
+   g_posBreakevenDone[n] = false;
+  }
+
+//+------------------------------------------------------------------+
+void RemovePositionState(const ulong ticket)
+  {
+   int idx = FindPositionState(ticket);
+   if(idx < 0)
+      return;
+
+   int last = ArraySize(g_posTicket) - 1;
+   g_posTicket[idx]        = g_posTicket[last];
+   g_posInitialRisk[idx]   = g_posInitialRisk[last];
+   g_posBreakevenDone[idx] = g_posBreakevenDone[last];
+   ArrayResize(g_posTicket, last);
+   ArrayResize(g_posInitialRisk, last);
+   ArrayResize(g_posBreakevenDone, last);
+  }
+
+//+------------------------------------------------------------------+
 //| Снятие протухших лимиток. Возраст в барах, с учётом freeze level. |
 //+------------------------------------------------------------------+
 void ExpirePendingOrders(void)
@@ -660,8 +806,21 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
       double profit    = HistoryDealGetDouble(trans.deal, DEAL_PROFIT);
       long   dealReason = HistoryDealGetInteger(trans.deal, DEAL_REASON);
 
+      ulong positionId = HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
+
       if(entryType == DEAL_ENTRY_IN)
+        {
          g_log.Write("FILLED", StringFormat("deal=%I64u price=%.5f", trans.deal, price));
+
+         //--- изначальный риск фиксируем сразу после филла, для б/у и трейлинга
+         if(PositionSelectByTicket(positionId))
+           {
+            double posOpen = PositionGetDouble(POSITION_PRICE_OPEN);
+            double posSl   = PositionGetDouble(POSITION_SL);
+            if(posSl > 0.0)
+               AddPositionState(positionId, MathAbs(posOpen - posSl));
+           }
+        }
       else
          if(entryType == DEAL_ENTRY_OUT)
            {
@@ -673,6 +832,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                   how = "TP";
             g_log.Write("CLOSED", StringFormat("deal=%I64u price=%.5f pnl=%.2f by=%s",
                                                trans.deal, price, profit, how));
+            RemovePositionState(positionId);
            }
      }
 
