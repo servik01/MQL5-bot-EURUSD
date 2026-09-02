@@ -31,8 +31,9 @@ input int      InpATRPeriod        = 14;       // Период ATR
 input group "=== Поглощение ==="
 input bool     InpUseEngulfing       = true;     // Альтернативный вход по поглощению
 input double   InpMinEngulfBodyRatio = 1.0;      // Мин. отношение тела к предыдущему
-input double   InpMaxEngulfBodyRatio = 2.5;      // Макс. отношение тела к предыдущему (0 = без потолка)
+input double   InpMaxEngulfBodyRatio = 2.0;      // Макс. отношение тела к предыдущему (0 = без потолка)
 input double   InpEngulfEntryRetrace = 0.50;     // Откат в тело поглощающей свечи
+input double   InpMaxEngulfRetracement = 0.70;   // Макс. откат premium/discount для поглощения (0 = без потолка)
 
 input group "=== Премиум / дискаунт ==="
 input bool     InpUsePremiumFilter = true;     // Требовать откат от экстремума
@@ -94,6 +95,11 @@ int OnInit()
    if(InpEngulfEntryRetrace < 0.0 || InpEngulfEntryRetrace >= 1.0)
      {
       Print("InpEngulfEntryRetrace должен быть в [0.0 .. 1.0)");
+      return(INIT_PARAMETERS_INCORRECT);
+     }
+   if(InpMaxEngulfRetracement > 0.0 && InpMaxEngulfRetracement <= InpMinRetracement)
+     {
+      Print("InpMaxEngulfRetracement должен быть больше InpMinRetracement (или 0, чтобы отключить)");
       return(INIT_PARAMETERS_INCORRECT);
      }
    //--- CSwingStructure::Update() смотрит только на shift=1 относительно своего
@@ -263,7 +269,7 @@ bool TryPinBarEntry(const ENUM_SMC_TREND td, const string dirName,
      }
 
    double retracePct = 0.0;
-   if(!CheckPremiumDiscount(td, dirName, pb.close, retracePct))
+   if(!CheckPremiumDiscount(td, dirName, pb.close, 0.0, retracePct))
       return(false);
 
    if(!PlaceLimitOrder(td, pb, retracePct))
@@ -304,7 +310,7 @@ bool TryEngulfingEntry(const ENUM_SMC_TREND td, const string dirName,
       return(false);
 
    double retracePct = 0.0;
-   if(!CheckPremiumDiscount(td, dirName, eg.close, retracePct))
+   if(!CheckPremiumDiscount(td, dirName, eg.close, InpMaxEngulfRetracement, retracePct))
       return(false);
 
    return(PlaceEngulfLimitOrder(td, eg, retracePct));
@@ -331,10 +337,13 @@ bool CheckNewsFilter(const string dirName)
   }
 
 //+------------------------------------------------------------------+
-//| Общий фильтр премиум/дискаунт - для пинбара и поглощения одинаков.|
+//| Общий фильтр премиум/дискаунт - нижняя граница одна на оба сетапа,|
+//| верхняя (maxRetrace) опциональна и своя у вызывающей стороны:     |
+//| у пинбара глубокий откат работает лучше, у поглощения - хуже.     |
 //+------------------------------------------------------------------+
 bool CheckPremiumDiscount(const ENUM_SMC_TREND td, const string dirName,
-                          const double closePrice, double &retracePct)
+                          const double closePrice, const double maxRetrace,
+                          double &retracePct)
   {
    retracePct = 0.0;
    if(!InpUsePremiumFilter)
@@ -362,6 +371,15 @@ bool CheckPremiumDiscount(const ENUM_SMC_TREND td, const string dirName,
                                            retracePct * 100.0, InpMinRetracement * 100.0));
       if(InpVerboseLog)
          PrintFormat("Пропуск: откат только %.1f%%", retracePct * 100.0);
+      return(false);
+     }
+
+   if(maxRetrace > 0.0 && retracePct > maxRetrace)
+     {
+      g_log.Rejected(dirName, StringFormat("откат %.1f%% > %.1f%%",
+                                           retracePct * 100.0, maxRetrace * 100.0));
+      if(InpVerboseLog)
+         PrintFormat("Пропуск: откат слишком глубокий %.1f%%", retracePct * 100.0);
       return(false);
      }
 

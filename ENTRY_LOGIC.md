@@ -64,13 +64,13 @@ flowchart TD
 
     subgraph EG [TryEngulfingEntry]
         I2{Диапазон >= minRange И тело в [InpMinEngulfBodyRatio, InpMaxEngulfBodyRatio] * пред.?}
-        I2 -- нет --> R6[engulf_range / not_engulfing]
+        I2 -- нет --> R6[engulf_range / not_engulfing / body_too_big]
         I2 -- да --> K2{Направление == тренду?}
         K2 -- нет --> EGno[нет]
         K2 -- да --> L2{Новости активны?}
         L2 -- да --> R7[news]
-        L2 -- нет --> O2{Откат >= InpMinRetracement?}
-        O2 -- нет --> R8[откат мал]
+        L2 -- нет --> O2{Откат в [InpMinRetracement, InpMaxEngulfRetracement]?}
+        O2 -- нет --> R8[откат мал / откат велик]
         O2 -- да --> EGok[PlaceEngulfLimitOrder]
     end
 
