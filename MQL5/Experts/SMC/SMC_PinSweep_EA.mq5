@@ -54,8 +54,8 @@ input int      InpMaxSpreadPoints  = 30;       // Макс. спред, пунк
 input int      InpMaxPositions     = 1;        // Макс. позиций + лимиток
 
 input group "=== Управление сделкой ==="
-input bool     InpUseBreakeven          = false; // Перенос в безубыток
-input double   InpBreakevenTriggerR     = 1.0;   // При каком R (от изначального риска) переносить
+input bool     InpUseBreakeven          = true;  // Перенос в безубыток
+input double   InpBreakevenTriggerR     = 2.0;   // При каком R (от изначального риска) переносить
 input int      InpBreakevenBufferPoints = 0;     // Буфер сверх входа при переносе, пунктов
 input bool     InpUseTrailingStop       = false; // Трейлинг-стоп
 input double   InpTrailingStartR        = 1.5;   // При каком R начинать трейлинг
