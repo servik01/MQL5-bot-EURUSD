@@ -14,9 +14,9 @@
 `TryPWSweepEntry` — единственный сетап, который **не требует** совпадения
 трендов `InpTrendTF`/`InpEntryTF`: сам CHoCH на `InpEntryTF` уже есть смена
 тренда там, а `InpTrendTF` (H4) может её ещё не подтвердить. Остальные общие
-фильтры (спред, Friday-no-new, InpMaxPositions) для него тоже действуют,
-кроме ATR-фильтра размера свечи и премиум/дискаунта — они специфичны для
-пинбара/поглощения.
+фильтры (спред, Friday-no-new, токсичный час, InpMaxPositions) для него тоже
+действуют, кроме ATR-фильтра размера свечи и премиум/дискаунта — они
+специфичны для пинбара/поглощения.
 
 ```mermaid
 flowchart TD
@@ -30,7 +30,9 @@ flowchart TD
     F -- да --> X0
     F -- нет --> H{Спред <= InpMaxSpreadPoints?}
     H -- нет --> X0
-    H -- да --> PWgate{InpUsePWSweep И есть место?}
+    H -- да --> HH{InpUseHourFilter И час в [InpBlockHourStart..InpBlockHourEnd]?}
+    HH -- да --> X0
+    HH -- нет --> PWgate{InpUsePWSweep И есть место?}
 
     subgraph PW [TryPWSweepEntry]
         PW1{Свежий CHoCH на InpEntryTF, был pending sweep PWL/PWH в ту же сторону?}

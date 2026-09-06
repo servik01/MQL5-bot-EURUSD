@@ -73,6 +73,11 @@ input int      InpNewsMinuteServer = 30;       // Минута новости, �
 input int      InpNewsMinsBefore   = 30;       // Пауза до новости, минут
 input int      InpNewsMinsAfter    = 30;       // Пауза после новости, минут
 
+input group "=== Токсичный час ==="
+input bool     InpUseHourFilter    = true;     // Не открывать новые в токсичном окне
+input int      InpBlockHourStart   = 8;        // Начало окна, час сервера
+input int      InpBlockHourEnd     = 11;       // Конец окна (включительно), час сервера
+
 input group "=== Выходные ==="
 input bool     InpCloseBeforeWeekend = true;   // Закрывать всё перед выходными
 input int      InpFridayNoNewHour   = 18;      // Пятница: не открывать после, час сервера
@@ -153,6 +158,12 @@ int OnInit()
    if(InpUseTrailingStop && (InpTrailingStartR < 0.0 || InpTrailingDistancePoints <= 0))
      {
       Print("InpTrailingStartR должен быть >= 0, InpTrailingDistancePoints > 0");
+      return(INIT_PARAMETERS_INCORRECT);
+     }
+   if(InpUseHourFilter && (InpBlockHourStart < 0 || InpBlockHourStart > 23 ||
+                          InpBlockHourEnd < InpBlockHourStart || InpBlockHourEnd > 23))
+     {
+      Print("InpBlockHourStart/End должны быть в [0..23], конец не раньше начала (окно без переноса через полночь)");
       return(INIT_PARAMETERS_INCORRECT);
      }
 
@@ -241,6 +252,9 @@ void OnTick()
       return;
 
    if(SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) > InpMaxSpreadPoints)
+      return;
+
+   if(InpUseHourFilter && IsToxicHour())
       return;
 
    //--- снятие PWL/PWH + CHoCH на InpEntryTF - самостоятельный сетап, не
@@ -840,6 +854,19 @@ bool IsFridayNoNewTime(void)
    MqlDateTime dt;
    TimeToStruct(TimeCurrent(), dt);
    return(dt.day_of_week == FRIDAY && dt.hour >= InpFridayNoNewHour);
+  }
+
+//+------------------------------------------------------------------+
+//| Токсичное окно: на бэктесте EURUSD 2018-2025 винрейт всех трёх    |
+//| сетапов синхронно проседает с ~30% до ~17% в этот час сервера -   |
+//| см. OPEN_QUESTIONS.md. Не отменяет уже выставленные лимитки,      |
+//| только блокирует новые - как и Friday-no-new.                     |
+//+------------------------------------------------------------------+
+bool IsToxicHour(void)
+  {
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   return(dt.hour >= InpBlockHourStart && dt.hour <= InpBlockHourEnd);
   }
 
 //+------------------------------------------------------------------+
