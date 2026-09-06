@@ -272,14 +272,11 @@ void CSwingStructure::DetectBreaks(void)
          brokeUp = true;
         }
      }
-   if(brokeUp)
-     {
-      m_lastEvent     = (m_trend == SMC_TREND_BEAR) ? SMC_CHOCH_BULL : SMC_BOS_BULL;
-      m_lastEventTime = bt;
-      m_trend         = SMC_TREND_BULL;
-      return;
-     }
 
+   //--- пробой вниз считаем независимо от brokeUp - иначе на рваной структуре,
+   //--- где одновременно есть непробитый хай ниже цены И непробитый лоу выше,
+   //--- лоу навсегда остаётся "непробитым" (ранний return после up-ветки его
+   //--- не проверял вовсе), хотя цена его уже инвалидировала.
    bool brokeDown = false;
    for(int i = ArraySize(m_lows) - 1; i >= 0; i--)
      {
@@ -289,6 +286,18 @@ void CSwingStructure::DetectBreaks(void)
          brokeDown = true;
         }
      }
+
+   //--- если пробито и вверх, и вниз в одном баре - приоритет у вверх (как и
+   //--- раньше), лоу при этом уже помечен broken выше, событие/тренд от него
+   //--- просто не регистрируются в этом баре.
+   if(brokeUp)
+     {
+      m_lastEvent     = (m_trend == SMC_TREND_BEAR) ? SMC_CHOCH_BULL : SMC_BOS_BULL;
+      m_lastEventTime = bt;
+      m_trend         = SMC_TREND_BULL;
+      return;
+     }
+
    if(brokeDown)
      {
       m_lastEvent     = (m_trend == SMC_TREND_BULL) ? SMC_CHOCH_BEAR : SMC_BOS_BEAR;
