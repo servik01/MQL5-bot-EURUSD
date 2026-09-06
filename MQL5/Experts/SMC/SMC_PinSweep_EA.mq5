@@ -13,6 +13,7 @@
 #include <SMC\Engulfing.mqh>
 #include <SMC\NewsFilter.mqh>
 #include <SMC\TradeLogger.mqh>
+#include <SMC\WeeklySweep.mqh>
 
 input group "=== Структура (тренд) ==="
 input ENUM_TIMEFRAMES InpTrendTF   = PERIOD_H4; // Старший ТФ тренда (был D1)
@@ -34,6 +35,10 @@ input double   InpMinEngulfBodyRatio = 1.0;      // Мин. отношение �
 input double   InpMaxEngulfBodyRatio = 2.0;      // Макс. отношение тела к предыдущему (0 = без потолка)
 input double   InpEngulfEntryRetrace = 0.50;     // Откат в тело поглощающей свечи
 input double   InpMaxEngulfRetracement = 0.70;   // Макс. откат premium/discount для поглощения (0 = без потолка)
+
+input group "=== Снятие PWL/PWH ==="
+input bool     InpUsePWSweep          = true;    // Вход по CHoCH InpEntryTF после снятия PWL/PWH
+input double   InpPWSweepEntryRetrace = 0.50;    // Откат в тело свечи CHoCH-пробоя
 
 input group "=== Премиум / дискаунт ==="
 input bool     InpUsePremiumFilter    = true;  // Требовать откат от экстремума
@@ -82,6 +87,7 @@ input bool     InpVerboseLog       = true;     // Подробный лог в �
 CTrade           g_trade;
 CSwingStructure  g_structD1;
 CSwingStructure  g_structH1;
+CWeeklySweep     g_weeklySweep;
 CNewsFilter      g_news;
 CTradeLogger     g_log;
 
@@ -112,6 +118,11 @@ int OnInit()
    if(InpEngulfEntryRetrace < 0.0 || InpEngulfEntryRetrace >= 1.0)
      {
       Print("InpEngulfEntryRetrace должен быть в [0.0 .. 1.0)");
+      return(INIT_PARAMETERS_INCORRECT);
+     }
+   if(InpPWSweepEntryRetrace < 0.0 || InpPWSweepEntryRetrace >= 1.0)
+     {
+      Print("InpPWSweepEntryRetrace должен быть в [0.0 .. 1.0)");
       return(INIT_PARAMETERS_INCORRECT);
      }
    if(InpMaxEngulfRetracement > 0.0 && InpMaxEngulfRetracement <= InpMinRetracement)
@@ -152,6 +163,8 @@ int OnInit()
    if(!g_structD1.Init(_Symbol, InpTrendTF, InpSwingBarsD1, InpBreakByClose, InpHistoryBarsD1))
       return(INIT_FAILED);
    if(!g_structH1.Init(_Symbol, InpEntryTF, InpSwingBarsH1, InpBreakByClose, InpHistoryBarsH1))
+      return(INIT_FAILED);
+   if(InpUsePWSweep && !g_weeklySweep.Init(_Symbol, InpEntryTF))
       return(INIT_FAILED);
 
    g_atrHandle = iATR(_Symbol, InpEntryTF, InpATRPeriod);
@@ -213,6 +226,8 @@ void OnTick()
 
    g_structD1.Update();
    g_structH1.Update();
+   if(InpUsePWSweep)
+      g_weeklySweep.Update();
 
    if(InpVerboseLog)
       PrintFormat("[%s] %s=%s %s=%s", TimeToString(cur),
@@ -225,15 +240,21 @@ void OnTick()
    if(InpCloseBeforeWeekend && IsFridayNoNewTime())
       return;
 
+   if(SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) > InpMaxSpreadPoints)
+      return;
+
+   //--- снятие PWL/PWH + CHoCH на InpEntryTF - самостоятельный сетап, не
+   //--- зависит от совпадения трендов InpTrendTF/InpEntryTF ниже (сам CHoCH
+   //--- и есть смена тренда на InpEntryTF, H4 может ещё не подтвердить)
+   if(InpUsePWSweep && CountOwnPositions() + CountOwnPendings() < InpMaxPositions)
+      TryPWSweepEntry();
+
    ENUM_SMC_TREND td = g_structD1.Trend();
    ENUM_SMC_TREND th = g_structH1.Trend();
    if(td == SMC_TREND_NONE || td != th)
       return;
 
    string dirName = (td == SMC_TREND_BULL) ? "BUY" : "SELL";
-
-   if(SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) > InpMaxSpreadPoints)
-      return;
 
    //--- фильтр размера свечи по ATR - общий для пинбара и поглощения
    double minRange = 0.0;
@@ -247,9 +268,10 @@ void OnTick()
       minRange = atrValue * InpMinRangeATR;
      }
 
-   //--- оба сетапа ищут вход независимо друг от друга (не ИЛИ, а параллельно) -
-   //--- если совпадут на одном баре и есть место по InpMaxPositions, встанут оба
-   TryPinBarEntry(td, dirName, minRange, atrValue);
+   //--- сетапы ищут вход независимо друг от друга (не ИЛИ, а параллельно) -
+   //--- если совпадут на одном баре и есть место по InpMaxPositions, встанут все
+   if(CountOwnPositions() + CountOwnPendings() < InpMaxPositions)
+      TryPinBarEntry(td, dirName, minRange, atrValue);
 
    if(InpUseEngulfing && CountOwnPositions() + CountOwnPendings() < InpMaxPositions)
       TryEngulfingEntry(td, dirName, minRange, atrValue);
@@ -352,6 +374,61 @@ bool TryEngulfingEntry(const ENUM_SMC_TREND td, const string dirName,
       return(false);
 
    return(PlaceEngulfLimitOrder(td, eg, retracePct));
+  }
+
+//+------------------------------------------------------------------+
+//| Снятие PWL/PWH + CHoCH на InpEntryTF. Направление и уровень для   |
+//| стопа/тейка берутся из свечи, которая пробила структуру (CHoCH),  |
+//| а не из свечи, снявшей PWL/PWH - это могут быть разные бары.      |
+//+------------------------------------------------------------------+
+bool TryPWSweepEntry(void)
+  {
+   datetime chochBarTime = iTime(_Symbol, InpEntryTF, 1);
+   bool     freshChoch   = (g_structH1.LastEventTime() == chochBarTime);
+
+   ENUM_SMC_EVENT ev  = g_structH1.LastEvent();
+   ENUM_SMC_TREND dir = SMC_TREND_NONE;
+
+   if(freshChoch && ev == SMC_CHOCH_BULL && g_weeklySweep.ConsumeLowPending())
+      dir = SMC_TREND_BULL;
+   else
+      if(freshChoch && ev == SMC_CHOCH_BEAR && g_weeklySweep.ConsumeHighPending())
+         dir = SMC_TREND_BEAR;
+      else
+         return(false);
+
+   string dirName = (dir == SMC_TREND_BULL) ? "BUY" : "SELL";
+
+   if(!CheckNewsFilter(dirName))
+      return(false);
+
+   double o = iOpen(_Symbol, InpEntryTF, 1);
+   double h = iHigh(_Symbol, InpEntryTF, 1);
+   double l = iLow(_Symbol, InpEntryTF, 1);
+   double c = iClose(_Symbol, InpEntryTF, 1);
+
+   double point  = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double buffer = InpSLBufferPoints * point;
+   double entry, sl, tp;
+
+   if(dir == SMC_TREND_BULL)
+     {
+      entry = c - InpPWSweepEntryRetrace * (c - o);
+      sl    = l - buffer;
+      if(entry - sl <= 0.0)
+         return(false);
+      tp = entry + (entry - sl) * InpRiskRewardRatio;
+     }
+   else
+     {
+      entry = c + InpPWSweepEntryRetrace * (o - c);
+      sl    = h + buffer;
+      if(sl - entry <= 0.0)
+         return(false);
+      tp = entry - (sl - entry) * InpRiskRewardRatio;
+     }
+
+   return(SubmitLimitOrder(dir, entry, sl, tp, "pwsweep", 0.0, 0.0, chochBarTime, l, h));
   }
 
 //+------------------------------------------------------------------+

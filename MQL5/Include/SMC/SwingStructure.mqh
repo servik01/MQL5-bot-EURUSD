@@ -64,6 +64,7 @@ public:
 
    ENUM_SMC_TREND    Trend(void)         const { return m_trend;         }
    ENUM_SMC_EVENT    LastEvent(void)     const { return m_lastEvent;     }
+   datetime          LastEventTime(void) const { return m_lastEventTime; }
    string            TrendToString(void) const;
 
    //--- ближайший неснятый и непробитый уровень ликвидности
