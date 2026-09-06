@@ -98,14 +98,18 @@
 Вход **лимитный** у всех триггеров, но откат считается по-разному:
 
 ```
-Пинбар:     entry = bodyEdge ∓ InpEntryRetrace * tail            (откат внутрь хвоста)
-Поглощение: entry = close ∓ InpEngulfEntryRetrace * (close-open)  (откат внутрь тела)
-PWL/PWH:    entry = close ∓ InpPWSweepEntryRetrace * (close-open) (откат внутрь тела CHoCH-свечи)
+Пинбар:     entry = bodyEdge ∓ InpEntryRetrace * tail             (откат внутрь хвоста)
+Поглощение: entry = close ∓ InpEngulfEntryRetrace * (close-open)   (откат внутрь тела)
+PWL/PWH:    entry = bodyTop/Bottom ∓ InpPWSweepEntryRetrace * body (откат внутрь тела CHoCH-свечи)
 ```
 
 (знак `∓` — минус для BUY, плюс для SELL; для пинбара `bodyEdge` = нижний/верхний
-край тела, `tail` = длина соответствующего хвоста; у PWL/PWH формула та же, что
-у поглощения, но свеча — не сигнальная поглощающая, а свеча CHoCH-пробоя)
+край тела, `tail` = длина соответствующего хвоста; у PWL/PWH откат считается через
+`bodyTop`/`bodyBottom = max/min(open, close)`, а не через `close∓ratio*(close-open)`
+напрямую, как у поглощения — цвет CHoCH-свечи не гарантирован направлением пробоя
+(пробой считается по `close` относительно уровня структуры, не по цвету свечи), так
+что формула через close-open могла бы откатывать не в ту сторону на редкой свече
+«не того» цвета; на обычной свече число то же самое)
 
 - **Стоп:** за экстремум сигнальной свечи (`low`/`high`) + буфер `InpSLBufferPoints`
   — общий параметр для всех триггеров.

@@ -411,9 +411,17 @@ bool TryPWSweepEntry(void)
    double buffer = InpSLBufferPoints * point;
    double entry, sl, tp;
 
+   //--- в отличие от поглощения, направление тела CHoCH-свечи не гарантировано
+   //--- (пробой считается по close выше/ниже уровня, а не по цвету свечи) -
+   //--- считаем через bodyTop/bodyBottom, а не через close∓ratio*(close-open),
+   //--- чтобы откат не инвертировался на "не той" по цвету свече. На обычной
+   //--- свече (цвет совпадает с направлением) формула даёт то же самое число.
+   double bodyTop    = MathMax(o, c);
+   double bodyBottom = MathMin(o, c);
+
    if(dir == SMC_TREND_BULL)
      {
-      entry = c - InpPWSweepEntryRetrace * (c - o);
+      entry = bodyTop - InpPWSweepEntryRetrace * (bodyTop - bodyBottom);
       sl    = l - buffer;
       if(entry - sl <= 0.0)
          return(false);
@@ -421,7 +429,7 @@ bool TryPWSweepEntry(void)
      }
    else
      {
-      entry = c + InpPWSweepEntryRetrace * (o - c);
+      entry = bodyBottom + InpPWSweepEntryRetrace * (bodyTop - bodyBottom);
       sl    = h + buffer;
       if(sl - entry <= 0.0)
          return(false);
